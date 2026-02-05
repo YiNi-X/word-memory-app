@@ -1,5 +1,5 @@
 # ==========================================
-# 📦 数据模型
+# 📦 数据模型 - Word=Card 战斗系统
 # ==========================================
 from enum import Enum, IntEnum
 from dataclasses import dataclass, field
@@ -17,143 +17,264 @@ class GamePhase(Enum):
 
 
 class NodeType(Enum):
-    """
-    节点类型枚举
-    
-    📝 扩展指南：添加新节点类型
-    1. 在此处添加枚举值
-    2. 在 registries/combat_registry.py 或 event_registry.py 注册处理器
-    """
-    # 战斗类型
-    COMBAT_NEW = "⚔️ 普通战斗"        # 新词战斗
-    COMBAT_RECALL = "🔄 回溯战斗"      # 旧词战斗
-    ELITE_MIXED = "☠️ 混合精英"        # 新旧混合
-    ELITE_STRONG = "💀 强力精英"       # 仅新词高难度
-    
-    # 事件类型
-    EVENT_QUIZ = "🎁 福利挑战"         # 答题事件
-    EVENT_RANDOM = "❓ 随机事件"       # 随机事件
-    REST = "🔥 营地休息"
-    SHOP = "🛒 地精商店"
-    
-    # Boss
-    BOSS = "👹 最终领主"
+    """节点类型"""
+    COMBAT = "⚔️ 战斗"
+    ELITE = "☠️ 精英"
+    EVENT = "❓ 事件"
+    REST = "🔥 营地"
+    SHOP = "🛒 商店"
+    BOSS = "👹 Boss"
 
 
 class WordTier(IntEnum):
-    """
-    莱特纳熟练度等级
-    
-    📝 算法说明：
-    - 答对：tier += 1 (最高 5)
-    - 答错：tier = max(1, tier - 1) (回退但不低于 1)
-    - Lv 0 必须通过学习模式解锁
-    """
-    UNKNOWN = 0       # 未接触 - 完全陌生
-    BLURRY = 1        # 模糊 - 刚学过/刚答错
-    CLEAR = 2         # 清晰 - 连续答对 1-2 次
-    MASTERED = 3      # 掌握 - 连续答对 3-4 次
-    INTERNALIZED = 4  # 内化 - 长期未出错
-    ARCHIVED = 5      # 封存 - 毕业词汇
+    """莱特纳熟练度等级"""
+    UNKNOWN = 0       # 未接触
+    BLURRY = 1        # 模糊
+    CLEAR = 2         # 清晰
+    MASTERED = 3      # 掌握
+    INTERNALIZED = 4  # 内化
+    ARCHIVED = 5      # 封存
     
     @property
     def display_name(self) -> str:
-        names = {
-            0: "未接触", 1: "模糊", 2: "清晰",
-            3: "掌握", 4: "内化", 5: "封存"
-        }
+        names = {0: "未接触", 1: "模糊", 2: "清晰", 3: "掌握", 4: "内化", 5: "封存"}
         return names.get(self.value, "未知")
     
     @property
     def color(self) -> str:
-        colors = {
-            0: "#666666", 1: "#ff6b6b", 2: "#feca57",
-            3: "#48dbfb", 4: "#1dd1a1", 5: "#a29bfe"
-        }
+        colors = {0: "#666666", 1: "#ff6b6b", 2: "#feca57", 3: "#48dbfb", 4: "#1dd1a1", 5: "#a29bfe"}
         return colors.get(self.value, "#ffffff")
 
 
-# 复习间隔配置 (房间数)
+# 复习间隔配置
 REVIEW_INTERVALS = {
-    WordTier.BLURRY: (1, 3),      # 1-3 房间内必须复现
-    WordTier.CLEAR: (5, 10),      # 5-10 房间间隔
-    WordTier.MASTERED: (15, 25),  # 15-25 房间间隔
-    WordTier.INTERNALIZED: (30, 50),  # 30-50 房间间隔
+    WordTier.BLURRY: (1, 3),
+    WordTier.CLEAR: (5, 10),
+    WordTier.MASTERED: (15, 25),
+    WordTier.INTERNALIZED: (30, 50),
 }
 
 
+# ==========================================
+# 🎴 卡牌系统
+# ==========================================
+class CardType(Enum):
+    """卡牌类型"""
+    ATTACK = "attack"     # 🟥 红 - 攻击
+    DEFENSE = "defense"   # 🟦 蓝 - 防御
+    UTILITY = "utility"   # 🟨 金 - 功能
+    
+    @property
+    def color(self) -> str:
+        colors = {"attack": "#e74c3c", "defense": "#3498db", "utility": "#f39c12"}
+        return colors.get(self.value, "#ffffff")
+    
+    @property
+    def icon(self) -> str:
+        icons = {"attack": "🟥", "defense": "🟦", "utility": "🟨"}
+        return icons.get(self.value, "⬜")
+    
+    @property
+    def name_cn(self) -> str:
+        names = {"attack": "攻击", "defense": "防御", "utility": "功能"}
+        return names.get(self.value, "未知")
+    
+    @staticmethod
+    def from_tier(tier: int) -> 'CardType':
+        """根据熟练度返回卡牌类型"""
+        if tier <= 1:
+            return CardType.ATTACK
+        elif tier <= 3:
+            return CardType.DEFENSE
+        else:
+            return CardType.UTILITY
+
+
 @dataclass
-class Word:
-    """单词数据模型"""
+class WordCard:
+    """单词卡牌"""
     word: str
     meaning: str
-    tier: WordTier = WordTier.UNKNOWN
-    correct_streak: int = 0  # 连续答对次数
-    last_seen_room: int = 0  # 上次出现的房间号
-    next_review_room: int = 0  # 下次复习的房间号
-    is_review: bool = False  # 是否为复习词
+    tier: int
+    card_type: CardType = None
+    learned: bool = False  # 是否已学习（红卡需要）
+    
+    def __post_init__(self):
+        if self.card_type is None:
+            self.card_type = CardType.from_tier(self.tier)
+    
+    @property
+    def damage(self) -> int:
+        """攻击伤害"""
+        if self.card_type == CardType.ATTACK:
+            return 25
+        return 5
+    
+    @property
+    def block(self) -> int:
+        """护甲值"""
+        if self.card_type == CardType.DEFENSE:
+            return 10
+        return 0
+    
+    @property
+    def backfire(self) -> int:
+        """答错反噬"""
+        if self.card_type == CardType.ATTACK:
+            return 15
+        return 0
     
     def to_dict(self) -> dict:
         return {
             "word": self.word,
             "meaning": self.meaning,
-            "tier": self.tier.value,
-            "correct_streak": self.correct_streak,
-            "last_seen_room": self.last_seen_room,
-            "next_review_room": self.next_review_room,
-            "is_review": self.is_review
+            "tier": self.tier,
+            "card_type": self.card_type.value,
+            "learned": self.learned
         }
+
+
+@dataclass
+class Enemy:
+    """敌人"""
+    name: str = "词汇魔物"
+    hp: int = 100
+    max_hp: int = 100
+    attack: int = 10
+    action_timer: int = 3      # 几回合后攻击
+    current_timer: int = 3     # 当前计时
+    intent: str = "attack"     # attack, charge, defend
     
-    @staticmethod
-    def from_dict(d: dict) -> 'Word':
-        return Word(
-            word=d["word"],
-            meaning=d["meaning"],
-            tier=WordTier(d.get("tier", 0)),
-            correct_streak=d.get("correct_streak", 0),
-            last_seen_room=d.get("last_seen_room", 0),
-            next_review_room=d.get("next_review_room", 0),
-            is_review=d.get("is_review", False)
-        )
+    def tick(self) -> str:
+        """回合推进，返回意图"""
+        self.current_timer -= 1
+        if self.current_timer <= 0:
+            self.current_timer = self.action_timer
+            return "attack"
+        return "charge"
+    
+    def take_damage(self, amount: int):
+        self.hp = max(0, self.hp - amount)
+    
+    def is_dead(self) -> bool:
+        return self.hp <= 0
+
+
+class CombatPhase(Enum):
+    """战斗阶段"""
+    LOADING = "loading"   # 装填阶段
+    BATTLE = "battle"     # 战斗阶段
+    VICTORY = "victory"   # 胜利
+    DEFEAT = "defeat"     # 失败
+
+
+@dataclass
+class CardCombatState:
+    """卡牌战斗状态"""
+    # 词库
+    word_pool: List[WordCard] = field(default_factory=list)
+    
+    # 弹仓 (已装填)
+    hand: List[WordCard] = field(default_factory=list)
+    hand_size: int = 6
+    
+    # 敌人
+    enemy: Enemy = None
+    
+    # 玩家状态
+    player_block: int = 0
+    
+    # 当前阶段
+    phase: CombatPhase = CombatPhase.LOADING
+    
+    # 当前出牌
+    current_card: Optional[WordCard] = None
+    current_options: Optional[List[str]] = None
+    
+    # 统计
+    turns: int = 0
+    
+    def __post_init__(self):
+        if self.enemy is None:
+            self.enemy = Enemy()
+    
+    def load_card(self, card: WordCard) -> bool:
+        """装填卡牌到弹仓"""
+        if len(self.hand) >= self.hand_size:
+            return False
+        self.hand.append(card)
+        return True
+    
+    def unload_card(self, card: WordCard):
+        """移除卡牌"""
+        if card in self.hand:
+            self.hand.remove(card)
+    
+    def count_attack_cards(self) -> int:
+        """统计红卡数量"""
+        return sum(1 for c in self.hand if c.card_type == CardType.ATTACK)
+    
+    def can_start_battle(self) -> bool:
+        """检查能否开始战斗"""
+        return len(self.hand) == self.hand_size and self.count_attack_cards() >= 3
+    
+    def start_battle(self):
+        """开始战斗"""
+        self.phase = CombatPhase.BATTLE
+        self.turns = 0
+    
+    def play_card(self, card: WordCard):
+        """出牌"""
+        self.current_card = card
+        if card in self.hand:
+            self.hand.remove(card)
 
 
 @dataclass
 class Player:
-    """玩家数据模型"""
+    """玩家"""
     id: int = 1
     gold: int = 0
     hp: int = 100
     max_hp: int = 100
-    inventory: List[str] = field(default_factory=list)  # 道具列表
-    relics: List[str] = field(default_factory=list)     # 圣遗物列表
-    current_room: int = 0  # 当前房间号 (用于复习调度)
+    block: int = 0
+    inventory: List[str] = field(default_factory=list)
+    relics: List[str] = field(default_factory=list)
+    current_room: int = 0
     
     def change_hp(self, amount: int):
+        # 先扣护甲
+        if amount < 0 and self.block > 0:
+            absorbed = min(self.block, -amount)
+            self.block -= absorbed
+            amount += absorbed
+            if absorbed > 0:
+                st.toast(f"🛡️ 护甲吸收 {absorbed}", icon="🛡️")
+        
         self.hp += amount
         self.hp = max(0, min(self.hp, self.max_hp))
+        
         if amount < 0:
             st.toast(f"💔 HP {amount}", icon="🩸")
-        else:
+        elif amount > 0:
             st.toast(f"💚 HP +{amount}", icon="🌿")
+    
+    def add_block(self, amount: int):
+        self.block += amount
+        st.toast(f"🛡️ +{amount} 护甲", icon="🛡️")
     
     def add_gold(self, amount: int):
         self.gold += amount
-        st.toast(f"💰 金币 +{amount}")
+        st.toast(f"💰 +{amount}G")
     
     def is_dead(self) -> bool:
         return self.hp <= 0
     
-    def has_item(self, item: str) -> bool:
-        return item in self.inventory
-    
-    def use_item(self, item: str) -> bool:
-        if item in self.inventory:
-            self.inventory.remove(item)
-            return True
-        return False
+    def reset_block(self):
+        """回合结束重置护甲"""
+        self.block = 0
     
     def advance_room(self):
-        """推进房间计数"""
         self.current_room += 1
 
 
@@ -163,55 +284,13 @@ class Node:
     type: NodeType
     level: int
     data: Dict[str, Any] = field(default_factory=dict)
-    status: str = "PENDING"  # PENDING, ACTIVE, CLEARED
-
-
-class CombatPhase(Enum):
-    """战斗阶段"""
-    LEARNING = "learning"   # 学习阶段 (新词先展示)
-    TESTING = "testing"     # 考核阶段
-    RESULT = "result"       # 结果展示
-
-
-@dataclass
-class CombatState:
-    """战斗状态"""
-    enemies: List[Dict]
-    current_idx: int = 0
-    phase: CombatPhase = CombatPhase.LEARNING  # 当前阶段
-    flipped: bool = False
-    options: Optional[List[str]] = None
-    damage_per_wrong: int = 10
-    gold_reward: int = 20
-    learned_current: bool = False  # 当前词是否已学习
-    
-    @property
-    def is_complete(self) -> bool:
-        return self.current_idx >= len(self.enemies)
-    
-    @property
-    def current_enemy(self) -> Optional[Dict]:
-        if self.is_complete:
-            return None
-        return self.enemies[self.current_idx]
-    
-    def advance(self):
-        self.current_idx += 1
-        self.phase = CombatPhase.LEARNING
-        self.flipped = False
-        self.options = None
-        self.learned_current = False
-    
-    def mark_learned(self):
-        """标记当前词已学习，进入考核"""
-        self.learned_current = True
-        self.phase = CombatPhase.TESTING
+    status: str = "PENDING"
 
 
 @dataclass
 class BossState:
     """Boss 战状态"""
-    phase: str = "loading"  # loading, article, quiz, victory
+    phase: str = "loading"
     article: Optional[Dict] = None
     quizzes: Optional[Dict] = None
     quiz_idx: int = 0

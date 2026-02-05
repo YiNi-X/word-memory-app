@@ -1,5 +1,5 @@
 # ==========================================
-# ⚙️ 配置常量
+# ⚙️ 配置常量 - Word=Card 战斗系统
 # ==========================================
 
 # Kimi API 配置
@@ -12,26 +12,37 @@ DB_NAME = "vocab_spire_v5.db"
 
 # 游戏平衡
 TOTAL_FLOORS = 6  # 总层数
+INITIAL_GOLD = 50  # 每局初始金币
 
-# 战斗配置
-COMBAT_NEW_WORD_COUNT = (4, 6)      # 普通战斗：4-6 新词
-COMBAT_RECALL_WORD_COUNT = (4, 6)   # 回溯战斗：4-6 旧词
-ELITE_MIXED_WORD_COUNT = (7, 10)    # 混合精英：7-10 混合
-ELITE_STRONG_WORD_COUNT = (7, 10)   # 强力精英：7-10 新词
-EVENT_QUIZ_WORD_COUNT = (7, 10)     # 福利事件：7-10 旧词
+# ==========================================
+# 🎴 卡牌战斗配置
+# ==========================================
+HAND_SIZE = 6           # 弹仓容量
+MIN_ATTACK_CARDS = 3    # 最少红卡数量
+
+# 卡牌效果
+ATTACK_DAMAGE = 25      # 🟥 红卡伤害
+ATTACK_BACKFIRE = 15    # 答错反噬伤害
+DEFENSE_BLOCK = 10      # 🟦 蓝卡护甲
+DEFENSE_HEAL = 5        # 蓝卡回血
+UTILITY_DRAW = 2        # 🟨 金卡抽牌
+UTILITY_DAMAGE_MULT = 2 # 金卡伤害加成
+
+# 敌人配置
+ENEMY_HP_BASE = 100     # 基础血量
+ENEMY_HP_ELITE = 150    # 精英血量
+ENEMY_HP_BOSS = 300     # Boss 血量
+ENEMY_ATTACK = 10       # 敌人攻击
+ENEMY_ACTION_TIMER = 3  # 几回合攻击一次
 
 # 奖励配置
-GOLD_COMBAT_NEW = 20
-GOLD_COMBAT_RECALL = 15
-GOLD_ELITE_MIXED = 40
-GOLD_ELITE_STRONG = 50
+GOLD_COMBAT = 30
+GOLD_ELITE = 50
 GOLD_BOSS = 100
 
-# 伤害配置
-DAMAGE_NORMAL = 10
-DAMAGE_ELITE = 15
-
-# 默认复习词库 (当 deck 表为空时使用)
+# ==========================================
+# 默认复习词库
+# ==========================================
 DEFAULT_REVIEW_WORDS = [
     {"word": "Ambiguous", "meaning": "模糊的，有歧义的"},
     {"word": "Compelling", "meaning": "令人信服的，引人注目的"},

@@ -1,5 +1,5 @@
 # ==========================================
-# 🗺️ 地图生成系统
+# 🗺️ 地图生成系统 - Word=Card 版本
 # ==========================================
 """
 MapSystem 负责：
@@ -13,7 +13,6 @@ import sys
 from pathlib import Path
 from typing import List, Optional
 
-# 添加父目录到路径
 _parent = Path(__file__).parent.parent
 if str(_parent) not in sys.path:
     sys.path.insert(0, str(_parent))
@@ -26,11 +25,13 @@ class MapSystem:
     """
     地图系统
     
-    层级结构：
-    - Floor 1-2: 主要是普通战斗/回溯战斗
-    - Floor 3-4: 精英怪开始出现，事件增多
-    - Floor 5: 精英/事件/商店
-    - Floor 6: Boss
+    简化版NodeType：
+    - COMBAT: 普通战斗
+    - ELITE: 精英战斗
+    - EVENT: 随机事件
+    - REST: 休息
+    - SHOP: 商店
+    - BOSS: Boss战
     """
     
     def __init__(self, total_floors: int = None):
@@ -40,19 +41,13 @@ class MapSystem:
         self.next_options: List[Node] = []
     
     def generate_next_options(self) -> List[Node]:
-        """
-        生成下一层的节点选项
-        
-        Returns:
-            2-3 个可选节点
-        """
+        """生成下一层的节点选项"""
         self.floor += 1
         
         # 最后一层强制 Boss
         if self.floor >= self.total_floors:
             return [Node(type=NodeType.BOSS, level=self.floor)]
         
-        # 根据层数确定节点池
         node_pool = self._get_node_pool_for_floor(self.floor)
         
         # 生成 2 个不同选项
@@ -60,80 +55,61 @@ class MapSystem:
         type1 = random.choice(node_pool)
         options.append(Node(type=type1, level=self.floor))
         
-        # 确保第二个选项不同
         remaining_pool = [t for t in node_pool if t != type1]
         if remaining_pool:
             type2 = random.choice(remaining_pool)
         else:
-            type2 = type1  # 如果池中只有一种类型
+            type2 = type1
         options.append(Node(type=type2, level=self.floor))
         
         return options
     
     def _get_node_pool_for_floor(self, floor: int) -> List[NodeType]:
-        """
-        根据层数返回可能出现的节点类型池
-        
-        📝 扩展指南：修改节点出现概率
-        调整列表中类型的出现次数来改变权重
-        """
+        """根据层数返回节点类型池"""
         
         if floor == 1:
-            # 第一层：简单入门
             return [
-                NodeType.COMBAT_NEW,
-                NodeType.COMBAT_NEW,
-                NodeType.COMBAT_RECALL,
-                NodeType.EVENT_RANDOM,
+                NodeType.COMBAT,
+                NodeType.COMBAT,
+                NodeType.COMBAT,
+                NodeType.EVENT,
             ]
         
         elif floor == 2:
-            # 第二层：仍然以普通战斗为主
             return [
-                NodeType.COMBAT_NEW,
-                NodeType.COMBAT_NEW,
-                NodeType.COMBAT_RECALL,
-                NodeType.COMBAT_RECALL,
-                NodeType.EVENT_RANDOM,
+                NodeType.COMBAT,
+                NodeType.COMBAT,
+                NodeType.EVENT,
                 NodeType.REST,
             ]
         
         elif floor == 3:
-            # 第三层：精英开始出现
             return [
-                NodeType.COMBAT_NEW,
-                NodeType.COMBAT_RECALL,
-                NodeType.ELITE_MIXED,
-                NodeType.EVENT_RANDOM,
-                NodeType.EVENT_QUIZ,
+                NodeType.COMBAT,
+                NodeType.ELITE,
+                NodeType.EVENT,
                 NodeType.REST,
             ]
         
         elif floor == 4:
-            # 第四层：精英概率增加，商店出现
             return [
-                NodeType.COMBAT_NEW,
-                NodeType.ELITE_MIXED,
-                NodeType.ELITE_STRONG,
-                NodeType.EVENT_QUIZ,
+                NodeType.COMBAT,
+                NodeType.ELITE,
+                NodeType.ELITE,
                 NodeType.SHOP,
                 NodeType.REST,
             ]
         
         else:
-            # 第五层 (Boss 前): 最后准备
+            # Boss 前
             return [
-                NodeType.ELITE_MIXED,
-                NodeType.ELITE_STRONG,
-                NodeType.EVENT_QUIZ,
+                NodeType.ELITE,
                 NodeType.SHOP,
                 NodeType.REST,
             ]
     
     def is_boss_floor(self) -> bool:
-        """判断是否为 Boss 层"""
         return self.floor >= self.total_floors
     
     def get_progress_ratio(self) -> float:
-        """获取进度比例 (0-1)"""
         return self.floor / self.total_floors

@@ -66,6 +66,9 @@ class GameDB:
                 FOREIGN KEY(player_id) REFERENCES players(id)
             )''')
             
+            # 迁移: 为旧表添加新列
+            self._migrate_deck_table(c)
+            
             # 爬塔历史
             c.execute('''CREATE TABLE IF NOT EXISTS run_history (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -89,6 +92,25 @@ class GameDB:
             
             # 初始化干扰词库
             self._init_distractor_pool(conn)
+    
+    def _migrate_deck_table(self, cursor):
+        """迁移旧版 deck 表，添加缺失的列"""
+        cursor.execute("PRAGMA table_info(deck)")
+        columns = {row[1] for row in cursor.fetchall()}
+        
+        migrations = [
+            ("tier", "INTEGER DEFAULT 0"),
+            ("correct_streak", "INTEGER DEFAULT 0"),
+            ("last_seen_room", "INTEGER DEFAULT 0"),
+            ("next_review_room", "INTEGER DEFAULT 0"),
+        ]
+        
+        for col_name, col_def in migrations:
+            if col_name not in columns:
+                try:
+                    cursor.execute(f"ALTER TABLE deck ADD COLUMN {col_name} {col_def}")
+                except Exception:
+                    pass  # 列已存在或其他错误
     
     def _init_distractor_pool(self, conn):
         """初始化干扰词库"""
@@ -158,7 +180,7 @@ class GameDB:
         """添加或更新词汇"""
         with self._get_conn() as conn:
             c = conn.cursor()
-            c.execute("SELECT id, tier FROM deck WHERE player_id = ? AND word = ?", (player_id, word))
+            c.execute("SELECT id FROM deck WHERE player_id = ? AND word = ?", (player_id, word))
             existing = c.fetchone()
             
             if existing:
@@ -187,8 +209,8 @@ class GameDB:
             if not row:
                 return
             
-            current_tier = row['tier']
-            streak = row['correct_streak']
+            current_tier = row['tier'] or 0
+            streak = row['correct_streak'] or 0
             
             if correct:
                 new_tier = min(WordTier.ARCHIVED.value, current_tier + 1)
@@ -239,17 +261,34 @@ class GameDB:
         """从 Deck 获取复习词，不足时用默认词补充"""
         with self._get_conn() as conn:
             c = conn.cursor()
-            # 优先获取 tier 1-3 的词（需要复习的）
-            c.execute("""SELECT word, meaning, tier FROM deck 
-                        WHERE player_id = ? AND tier > 0 AND tier < 5
-                        ORDER BY tier ASC, RANDOM() LIMIT ?""",
-                     (player_id, count))
-            words = [{
-                "word": row["word"], 
-                "meaning": row["meaning"], 
-                "tier": row["tier"],
-                "is_review": True
-            } for row in c.fetchall()]
+            # 检查 tier 列是否存在
+            c.execute("PRAGMA table_info(deck)")
+            columns = {row[1] for row in c.fetchall()}
+            
+            if 'tier' in columns:
+                # 优先获取 tier 1-3 的词（需要复习的）
+                c.execute("""SELECT word, meaning, tier FROM deck 
+                            WHERE player_id = ? AND tier > 0 AND tier < 5
+                            ORDER BY tier ASC, RANDOM() LIMIT ?""",
+                         (player_id, count))
+                words = [{
+                    "word": row["word"], 
+                    "meaning": row["meaning"], 
+                    "tier": row["tier"],
+                    "is_review": True
+                } for row in c.fetchall()]
+            else:
+                # 旧表没有 tier 列
+                c.execute("""SELECT word, meaning FROM deck 
+                            WHERE player_id = ?
+                            ORDER BY RANDOM() LIMIT ?""",
+                         (player_id, count))
+                words = [{
+                    "word": row["word"], 
+                    "meaning": row["meaning"], 
+                    "tier": 1,
+                    "is_review": True
+                } for row in c.fetchall()]
         
         # 不足时用默认词补充
         if len(words) < count:

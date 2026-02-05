@@ -100,6 +100,37 @@ SHOP_ITEMS: Dict[str, ShopItem] = {
         effect="gold_boost",
         value=0.5
     ),
+    
+    # v6.0 新增：圣遗物销售
+    "RELIC_PHILOSOPHERS_STONE": ShopItem(
+        name="贤者之石",
+        icon="💠",
+        description="每次战斗结束回复 10 HP",
+        price=125,
+        effect="grant_relic",
+        value="PHILOSOPHERS_STONE",
+        consumable=False
+    ),
+    
+    "RELIC_BLOOD_CRYSTAL": ShopItem(
+        name="血之水晶",
+        icon="🔴",
+        description="答对卡牌时有 20% 概率回复 5 HP",
+        price=100,
+        effect="grant_relic",
+        value="BLOOD_CRYSTAL",
+        consumable=False
+    ),
+    
+    "RELIC_GOLD_CHARM": ShopItem(
+        name="金币护符",
+        icon="🪙",
+        description="每场战斗额外获得 15 金币",
+        price=80,
+        effect="grant_relic",
+        value="GOLD_CHARM",
+        consumable=False
+    ),
 }
 
 
@@ -120,6 +151,19 @@ class ShopRegistry:
         import random
         keys = random.sample(list(SHOP_ITEMS.keys()), min(count, len(SHOP_ITEMS)))
         return {k: SHOP_ITEMS[k] for k in keys}
+    
+    @staticmethod
+    def get_card_price(card_type: str, buy_count: int) -> int:
+        """获取卡牌购买价格（递增）"""
+        from config import SHOP_RED_CARD_BASE_PRICE, SHOP_BLUE_CARD_BASE_PRICE, SHOP_GOLD_CARD_PRICE
+        
+        if card_type == "red":
+            return SHOP_RED_CARD_BASE_PRICE * (buy_count + 1)  # 25, 50, 75...
+        elif card_type == "blue":
+            return SHOP_BLUE_CARD_BASE_PRICE * (buy_count + 1)  # 50, 100, 150...
+        elif card_type == "gold":
+            return SHOP_GOLD_CARD_PRICE  # 固定 100G
+        return 0
     
     @staticmethod
     def register(item_id: str, item: ShopItem):

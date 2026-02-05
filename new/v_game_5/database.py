@@ -1,5 +1,5 @@
 # ==========================================
-# 🗄️ 数据库持久化层
+# 🗄️ 数据库持久化层 - v5.4
 # ==========================================
 import sqlite3
 import json
@@ -8,14 +8,13 @@ import sys
 from pathlib import Path
 from datetime import datetime
 from contextlib import contextmanager
+from typing import List, Optional
 
-# 添加当前目录到路径
 _current_dir = Path(__file__).parent
 if str(_current_dir) not in sys.path:
     sys.path.insert(0, str(_current_dir))
 
 from config import DB_NAME, DEFAULT_REVIEW_WORDS
-from models import WordTier, REVIEW_INTERVALS
 
 
 class GameDB:
@@ -52,35 +51,40 @@ class GameDB:
                 last_played TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )''')
             
-            # 已掌握词汇表 (Deck) - 包含莱特纳熟练度
+            # 词汇表 (Grimoire) - v5.4 结构
             c.execute('''CREATE TABLE IF NOT EXISTS deck (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 player_id INTEGER,
                 word TEXT,
                 meaning TEXT,
                 tier INTEGER DEFAULT 0,
-                correct_streak INTEGER DEFAULT 0,
+                consecutive_correct INTEGER DEFAULT 0,
+                error_count INTEGER DEFAULT 0,
+                priority TEXT DEFAULT 'normal',
                 last_seen_room INTEGER DEFAULT 0,
                 next_review_room INTEGER DEFAULT 0,
                 mastered_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY(player_id) REFERENCES players(id)
             )''')
             
-            # 迁移: 为旧表添加新列
+            # 迁移旧表
             self._migrate_deck_table(c)
+            self._migrate_run_history_table(c)
             
-            # 爬塔历史
+            # 爬塔历史/存档
             c.execute('''CREATE TABLE IF NOT EXISTS run_history (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 player_id INTEGER,
                 floor_reached INTEGER,
                 victory BOOLEAN,
                 words_learned TEXT,
+                deck_snapshot TEXT,
+                in_progress BOOLEAN DEFAULT FALSE,
                 ended_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY(player_id) REFERENCES players(id)
             )''')
             
-            # 全局干扰词库 (用于生成选项)
+            # 全局干扰词库
             c.execute('''CREATE TABLE IF NOT EXISTS distractor_pool (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 word TEXT UNIQUE,
@@ -89,18 +93,18 @@ class GameDB:
             )''')
             
             conn.commit()
-            
-            # 初始化干扰词库
             self._init_distractor_pool(conn)
     
     def _migrate_deck_table(self, cursor):
-        """迁移旧版 deck 表，添加缺失的列"""
+        """迁移旧版 deck 表"""
         cursor.execute("PRAGMA table_info(deck)")
         columns = {row[1] for row in cursor.fetchall()}
         
         migrations = [
             ("tier", "INTEGER DEFAULT 0"),
-            ("correct_streak", "INTEGER DEFAULT 0"),
+            ("consecutive_correct", "INTEGER DEFAULT 0"),
+            ("error_count", "INTEGER DEFAULT 0"),
+            ("priority", "TEXT DEFAULT 'normal'"),
             ("last_seen_room", "INTEGER DEFAULT 0"),
             ("next_review_room", "INTEGER DEFAULT 0"),
         ]
@@ -110,7 +114,24 @@ class GameDB:
                 try:
                     cursor.execute(f"ALTER TABLE deck ADD COLUMN {col_name} {col_def}")
                 except Exception:
-                    pass  # 列已存在或其他错误
+                    pass
+    
+    def _migrate_run_history_table(self, cursor):
+        """迁移旧版 run_history 表"""
+        cursor.execute("PRAGMA table_info(run_history)")
+        columns = {row[1] for row in cursor.fetchall()}
+        
+        migrations = [
+            ("in_progress", "BOOLEAN DEFAULT FALSE"),
+            ("deck_snapshot", "TEXT"),
+        ]
+        
+        for col_name, col_def in migrations:
+            if col_name not in columns:
+                try:
+                    cursor.execute(f"ALTER TABLE run_history ADD COLUMN {col_name} {col_def}")
+                except Exception:
+                    pass
     
     def _init_distractor_pool(self, conn):
         """初始化干扰词库"""
@@ -125,26 +146,8 @@ class GameDB:
             ("Imminent", "即将发生的", "adj"),
             ("Jeopardize", "危及，损害", "v"),
             ("Keen", "敏锐的，热衷的", "adj"),
-            ("Lethargic", "昏昏欲睡的", "adj"),
-            ("Meticulous", "一丝不苟的", "adj"),
-            ("Nonchalant", "漠不关心的", "adj"),
-            ("Obsolete", "过时的", "adj"),
-            ("Pragmatic", "务实的", "adj"),
-            ("Resilient", "有弹性的，坚韧的", "adj"),
-            ("Scrutinize", "仔细检查", "v"),
-            ("Tenacious", "顽强的，坚持的", "adj"),
-            ("Ubiquitous", "无处不在的", "adj"),
-            ("Volatile", "易变的，不稳定的", "adj"),
-            ("Whimsical", "古怪的，异想天开的", "adj"),
-            ("Zealous", "热情的，狂热的", "adj"),
-            ("Acquiesce", "默许，顺从", "v"),
-            ("Belligerent", "好斗的", "adj"),
-            ("Cacophony", "刺耳的声音", "n"),
-            ("Delineate", "描绘，勾画", "v"),
             ("Ephemeral", "短暂的", "adj"),
-            ("Frivolous", "轻浮的", "adj"),
-            ("Gregarious", "合群的，爱社交的", "adj"),
-            ("Haughty", "傲慢的", "adj"),
+            ("Cacophony", "刺耳的声音", "n"),
         ]
         
         c = conn.cursor()
@@ -155,8 +158,11 @@ class GameDB:
             except:
                 pass
     
+    # ==========================================
+    # 玩家管理
+    # ==========================================
+    
     def get_or_create_player(self) -> dict:
-        """获取或创建默认玩家"""
         with self._get_conn() as conn:
             c = conn.cursor()
             c.execute("SELECT * FROM players LIMIT 1")
@@ -164,8 +170,7 @@ class GameDB:
             if player:
                 return dict(player)
             c.execute("INSERT INTO players DEFAULT VALUES")
-            player_id = c.lastrowid
-            return {"id": player_id, "name": "Adventurer", "gold": 0, "total_runs": 0, "victories": 0}
+            return {"id": c.lastrowid, "name": "Adventurer", "gold": 0, "total_runs": 0, "victories": 0}
     
     def update_gold(self, player_id: int, gold_amount: int):
         with self._get_conn() as conn:
@@ -173,139 +178,363 @@ class GameDB:
                         (gold_amount, player_id))
     
     # ==========================================
-    # 莱特纳系统方法
+    # 词汇管理 (Grimoire)
     # ==========================================
     
-    def add_or_update_word(self, player_id: int, word: str, meaning: str, tier: int = 0):
-        """添加或更新词汇"""
+    def add_word(self, player_id: int, word: str, meaning: str, 
+                 tier: int = 0, priority: str = "normal") -> int:
+        """添加新词到词库"""
         with self._get_conn() as conn:
             c = conn.cursor()
             c.execute("SELECT id FROM deck WHERE player_id = ? AND word = ?", (player_id, word))
             existing = c.fetchone()
             
             if existing:
-                # 只更新释义，不覆盖熟练度
-                conn.execute("UPDATE deck SET meaning = ? WHERE id = ?", (meaning, existing['id']))
+                conn.execute("UPDATE deck SET meaning = ?, priority = ? WHERE id = ?", 
+                           (meaning, priority, existing['id']))
+                return existing['id']
             else:
-                conn.execute("""INSERT INTO deck 
-                    (player_id, word, meaning, tier, correct_streak) 
-                    VALUES (?, ?, ?, ?, 0)""",
-                    (player_id, word, meaning, tier))
+                c.execute("""INSERT INTO deck 
+                    (player_id, word, meaning, tier, consecutive_correct, priority) 
+                    VALUES (?, ?, ?, ?, 0, ?)""",
+                    (player_id, word, meaning, tier, priority))
+                return c.lastrowid
     
-    def update_word_tier(self, player_id: int, word: str, correct: bool, current_room: int):
+    def add_words_batch(self, player_id: int, words: List[dict], priority: str = "pinned"):
+        """批量添加词汇 (用于 Word Library 输入)"""
+        for w in words:
+            self.add_word(player_id, w['word'], w.get('meaning', ''), 
+                         tier=0, priority=priority)
+    
+    def get_words_by_tier_range(self, player_id: int, min_tier: int, max_tier: int, count: int = 50) -> list:
+        """按熟练度范围获取词汇"""
+        with self._get_conn() as conn:
+            c = conn.cursor()
+            c.execute("""SELECT word, meaning, tier, consecutive_correct, priority, error_count
+                        FROM deck WHERE player_id = ? AND tier >= ? AND tier <= ?
+                        ORDER BY priority DESC, RANDOM() LIMIT ?""",
+                     (player_id, min_tier, max_tier, count))
+            return [dict(row) for row in c.fetchall()]
+    
+    def get_all_words(self, player_id: int) -> dict:
+        """获取所有词汇，按颜色分类"""
+        return {
+            "red": self.get_words_by_tier_range(player_id, 0, 1, 100),
+            "blue": self.get_words_by_tier_range(player_id, 2, 3, 100),
+            "gold": self.get_words_by_tier_range(player_id, 4, 5, 100),
+        }
+    
+    # ==========================================
+    # 智能推荐 (Recommender)
+    # ==========================================
+    
+    def get_draft_candidates(self, player_id: int, count: int = 3) -> list:
         """
-        更新单词熟练度
+        获取战后抓牌候选词
+        优先级: PINNED > GHOST > RANDOM
+        """
+        candidates = []
         
-        算法：
-        - 答对：tier += 1, correct_streak += 1
-        - 答错：tier = max(1, tier - 1), correct_streak = 0
+        with self._get_conn() as conn:
+            c = conn.cursor()
+            
+            # Priority 1: PINNED (用户新输入)
+            c.execute("""SELECT word, meaning, tier, priority FROM deck 
+                        WHERE player_id = ? AND tier <= 1 AND priority = 'pinned'
+                        ORDER BY id DESC LIMIT ?""",
+                     (player_id, count))
+            pinned = [dict(row) for row in c.fetchall()]
+            candidates.extend(pinned)
+            
+            if len(candidates) >= count:
+                return candidates[:count]
+            
+            # Priority 2: GHOST (高错误率)
+            remaining = count - len(candidates)
+            existing_words = {c['word'] for c in candidates}
+            c.execute("""SELECT word, meaning, tier, priority FROM deck 
+                        WHERE player_id = ? AND tier <= 1 AND priority = 'ghost'
+                        AND word NOT IN ({})
+                        ORDER BY error_count DESC LIMIT ?""".format(
+                            ','.join('?' * len(existing_words)) if existing_words else '""'
+                        ),
+                     (player_id, *existing_words, remaining) if existing_words else (player_id, remaining))
+            ghost = [dict(row) for row in c.fetchall()]
+            candidates.extend(ghost)
+            
+            if len(candidates) >= count:
+                return candidates[:count]
+            
+            # Priority 3: RANDOM (剩余 Lv0)
+            remaining = count - len(candidates)
+            existing_words = {c['word'] for c in candidates}
+            placeholders = ','.join('?' * len(existing_words)) if existing_words else '""'
+            
+            c.execute(f"""SELECT word, meaning, tier, priority FROM deck 
+                        WHERE player_id = ? AND tier <= 1 
+                        AND word NOT IN ({placeholders})
+                        ORDER BY RANDOM() LIMIT ?""",
+                     (player_id, *existing_words, remaining) if existing_words else (player_id, remaining))
+            random_words = [dict(row) for row in c.fetchall()]
+            candidates.extend(random_words)
+        
+        return candidates[:count]
+    
+    def get_game_pool(self, player_id: int, red: int = 25, blue: int = 12, gold: int = 5) -> list:
+        """
+        获取本局游戏的单词池
+        默认: 25红 + 12蓝 + 5金 = 42张
+        """
+        pool = []
+        
+        with self._get_conn() as conn:
+            c = conn.cursor()
+            
+            # Red cards (Lv0-1)
+            c.execute("""SELECT word, meaning, tier, consecutive_correct, priority FROM deck 
+                        WHERE player_id = ? AND tier <= 1
+                        ORDER BY priority DESC, RANDOM() LIMIT ?""",
+                     (player_id, red))
+            pool.extend([dict(row) for row in c.fetchall()])
+            
+            # Blue cards (Lv2-3)
+            c.execute("""SELECT word, meaning, tier, consecutive_correct, priority FROM deck 
+                        WHERE player_id = ? AND tier >= 2 AND tier <= 3
+                        ORDER BY RANDOM() LIMIT ?""",
+                     (player_id, blue))
+            pool.extend([dict(row) for row in c.fetchall()])
+            
+            # Gold cards (Lv4-5)
+            c.execute("""SELECT word, meaning, tier, consecutive_correct, priority FROM deck 
+                        WHERE player_id = ? AND tier >= 4
+                        ORDER BY RANDOM() LIMIT ?""",
+                     (player_id, gold))
+            pool.extend([dict(row) for row in c.fetchall()])
+        
+        # 如果不够，用任意词补充
+        total_needed = red + blue + gold
+        if len(pool) < total_needed:
+            existing = {w['word'] for w in pool}
+            with self._get_conn() as conn:
+                c = conn.cursor()
+                placeholders = ','.join('?' * len(existing)) if existing else '""'
+                c.execute(f"""SELECT word, meaning, tier, consecutive_correct, priority FROM deck 
+                            WHERE player_id = ? AND word NOT IN ({placeholders})
+                            ORDER BY RANDOM() LIMIT ?""",
+                         (player_id, *existing, total_needed - len(pool)) if existing else (player_id, total_needed - len(pool)))
+                pool.extend([dict(row) for row in c.fetchall()])
+        
+        return pool
+    
+    def get_initial_deck_from_pool(self, pool: list, red: int = 6, blue: int = 2, gold: int = 1) -> list:
+        """
+        从游戏池中抽取初始卡组
+        默认: 6红 + 2蓝 + 1金 = 9张
+        """
+        import random
+        
+        red_cards = [w for w in pool if w.get('tier', 0) <= 1]
+        blue_cards = [w for w in pool if 2 <= w.get('tier', 0) <= 3]
+        gold_cards = [w for w in pool if w.get('tier', 0) >= 4]
+        
+        deck = []
+        deck.extend(random.sample(red_cards, min(red, len(red_cards))))
+        deck.extend(random.sample(blue_cards, min(blue, len(blue_cards))))
+        deck.extend(random.sample(gold_cards, min(gold, len(gold_cards))))
+        
+        # 补足数量
+        total_needed = red + blue + gold
+        if len(deck) < total_needed:
+            remaining = [w for w in pool if w not in deck]
+            random.shuffle(remaining)
+            deck.extend(remaining[:total_needed - len(deck)])
+        
+        return deck
+    
+    def get_initial_deck(self, player_id: int) -> list:
+        """
+        获取初始卡组
+        5 Red (Lv0-1) + 2 Blue (Lv2-3) + 1 Gold (Lv4-5)
+        """
+        deck = []
+        
+        with self._get_conn() as conn:
+            c = conn.cursor()
+            
+            # 5 Red cards (Lv0-1)
+            c.execute("""SELECT word, meaning, tier, consecutive_correct, priority FROM deck 
+                        WHERE player_id = ? AND tier <= 1
+                        ORDER BY priority DESC, RANDOM() LIMIT 5""",
+                     (player_id,))
+            red_cards = [dict(row) for row in c.fetchall()]
+            deck.extend(red_cards)
+            
+            # 2 Blue cards (Lv2-3)
+            c.execute("""SELECT word, meaning, tier, consecutive_correct, priority FROM deck 
+                        WHERE player_id = ? AND tier >= 2 AND tier <= 3
+                        ORDER BY RANDOM() LIMIT 2""",
+                     (player_id,))
+            blue_cards = [dict(row) for row in c.fetchall()]
+            deck.extend(blue_cards)
+            
+            # 1 Gold card (Lv4-5)
+            c.execute("""SELECT word, meaning, tier, consecutive_correct, priority FROM deck 
+                        WHERE player_id = ? AND tier >= 4
+                        ORDER BY RANDOM() LIMIT 1""",
+                     (player_id,))
+            gold_cards = [dict(row) for row in c.fetchall()]
+            deck.extend(gold_cards)
+        
+        # 如果不足 8 张，用 Lv0 补充
+        if len(deck) < 8:
+            needed = 8 - len(deck)
+            existing = {d['word'] for d in deck}
+            
+            with self._get_conn() as conn:
+                c = conn.cursor()
+                placeholders = ','.join('?' * len(existing)) if existing else '""'
+                c.execute(f"""SELECT word, meaning, tier, consecutive_correct, priority FROM deck 
+                            WHERE player_id = ? AND word NOT IN ({placeholders})
+                            ORDER BY tier ASC, RANDOM() LIMIT ?""",
+                         (player_id, *existing, needed) if existing else (player_id, needed))
+                extra = [dict(row) for row in c.fetchall()]
+                deck.extend(extra)
+        
+        return deck[:8]
+    
+    # ==========================================
+    # 升级判定
+    # ==========================================
+    
+    def update_word_progress(self, player_id: int, word: str, correct: bool, current_room: int = 0):
+        """
+        更新单词进度
+        
+        升级判定:
+        - Red -> Blue: consecutive_correct >= 3
+        - Blue -> Gold: consecutive_correct >= 5
         """
         with self._get_conn() as conn:
             c = conn.cursor()
-            c.execute("SELECT id, tier, correct_streak FROM deck WHERE player_id = ? AND word = ?", 
+            c.execute("SELECT id, tier, consecutive_correct, error_count FROM deck WHERE player_id = ? AND word = ?", 
                      (player_id, word))
             row = c.fetchone()
             
             if not row:
-                return
+                return None
             
             current_tier = row['tier'] or 0
-            streak = row['correct_streak'] or 0
+            streak = row['consecutive_correct'] or 0
+            errors = row['error_count'] or 0
             
             if correct:
-                new_tier = min(WordTier.ARCHIVED.value, current_tier + 1)
                 new_streak = streak + 1
+                new_tier = current_tier
+                
+                # 升级判定
+                if current_tier <= 1 and new_streak >= 2:
+                    new_tier = 2  # Red -> Blue
+                    new_streak = 0  # 重置连击
+                elif current_tier in [2, 3] and new_streak >= 3:
+                    new_tier = 4  # Blue -> Gold
+                    new_streak = 0
+                
+                conn.execute("""UPDATE deck SET 
+                    tier = ?, consecutive_correct = ?, last_seen_room = ?, priority = 'normal'
+                    WHERE id = ?""",
+                    (new_tier, new_streak, current_room, row['id']))
+                
+                return {"upgraded": new_tier > current_tier, "new_tier": new_tier}
             else:
-                new_tier = max(WordTier.BLURRY.value, current_tier - 1)
-                new_streak = 0
-            
-            # 计算下次复习房间
-            next_review = self._calculate_next_review(WordTier(new_tier), current_room)
-            
-            conn.execute("""UPDATE deck SET 
-                tier = ?, correct_streak = ?, last_seen_room = ?, next_review_room = ?
-                WHERE id = ?""",
-                (new_tier, new_streak, current_room, next_review, row['id']))
+                # 答错: 降级 + 标记为 GHOST
+                new_tier = max(0, current_tier - 1)
+                new_errors = errors + 1
+                
+                conn.execute("""UPDATE deck SET 
+                    tier = ?, consecutive_correct = 0, error_count = ?, 
+                    priority = 'ghost', last_seen_room = ?
+                    WHERE id = ?""",
+                    (new_tier, new_errors, current_room, row['id']))
+                
+                return {"upgraded": False, "new_tier": new_tier, "downgraded": new_tier < current_tier}
     
-    def _calculate_next_review(self, tier: WordTier, current_room: int) -> int:
-        """计算下次复习房间号"""
-        if tier == WordTier.ARCHIVED:
-            return 999999  # 封存词不再复习
-        
-        interval = REVIEW_INTERVALS.get(tier, (10, 20))
-        offset = random.randint(interval[0], interval[1])
-        return current_room + offset
+    # ==========================================
+    # 存档系统
+    # ==========================================
     
-    def get_words_by_tier(self, player_id: int, tier: WordTier, count: int = 10) -> list:
-        """按熟练度等级获取词汇"""
+    def save_run_state(self, player_id: int, floor: int, deck: list, in_progress: bool = True):
+        """保存游戏进度"""
+        with self._get_conn() as conn:
+            # 先清除旧的进行中存档
+            conn.execute("UPDATE run_history SET in_progress = FALSE WHERE player_id = ? AND in_progress = TRUE",
+                        (player_id,))
+            
+            conn.execute("""INSERT INTO run_history 
+                (player_id, floor_reached, victory, deck_snapshot, in_progress)
+                VALUES (?, ?, FALSE, ?, ?)""",
+                (player_id, floor, json.dumps(deck, ensure_ascii=False), in_progress))
+    
+    def get_continue_state(self, player_id: int) -> Optional[dict]:
+        """获取可继续的存档"""
         with self._get_conn() as conn:
             c = conn.cursor()
-            c.execute("""SELECT word, meaning, tier, correct_streak, last_seen_room, next_review_room 
-                        FROM deck WHERE player_id = ? AND tier = ? 
-                        ORDER BY RANDOM() LIMIT ?""",
-                     (player_id, tier.value, count))
-            return [dict(row) for row in c.fetchall()]
+            c.execute("""SELECT * FROM run_history 
+                        WHERE player_id = ? AND in_progress = TRUE
+                        ORDER BY id DESC LIMIT 1""",
+                     (player_id,))
+            row = c.fetchone()
+            if row:
+                return {
+                    "floor": row['floor_reached'],
+                    "deck": json.loads(row['deck_snapshot']) if row['deck_snapshot'] else []
+                }
+            return None
     
-    def get_due_review_words(self, player_id: int, current_room: int, count: int = 10) -> list:
-        """获取到期需要复习的词汇"""
+    def end_run(self, player_id: int, floor: int, victory: bool, words: list):
+        """结束游戏"""
         with self._get_conn() as conn:
-            c = conn.cursor()
-            c.execute("""SELECT word, meaning, tier, correct_streak, last_seen_room, next_review_room 
-                        FROM deck WHERE player_id = ? AND tier > 0 AND tier < 5 
-                        AND next_review_room <= ?
-                        ORDER BY tier ASC, next_review_room ASC LIMIT ?""",
-                     (player_id, current_room, count))
-            return [dict(row) for row in c.fetchall()]
+            # 清除进行中存档
+            conn.execute("UPDATE run_history SET in_progress = FALSE WHERE player_id = ?", (player_id,))
+            
+            # 记录结果
+            conn.execute("""INSERT INTO run_history 
+                (player_id, floor_reached, victory, words_learned, in_progress)
+                VALUES (?, ?, ?, ?, FALSE)""",
+                (player_id, floor, victory, json.dumps(words, ensure_ascii=False)))
+            
+            if victory:
+                conn.execute("UPDATE players SET total_runs = total_runs + 1, victories = victories + 1 WHERE id = ?",
+                           (player_id,))
+            else:
+                conn.execute("UPDATE players SET total_runs = total_runs + 1 WHERE id = ?", (player_id,))
+    
+    # ==========================================
+    # 兼容旧方法
+    # ==========================================
+    
+    def add_or_update_word(self, player_id: int, word: str, meaning: str, tier: int = 0):
+        return self.add_word(player_id, word, meaning, tier)
+    
+    def update_word_tier(self, player_id: int, word: str, correct: bool, current_room: int):
+        return self.update_word_progress(player_id, word, correct, current_room)
     
     def get_review_words(self, player_id: int, count: int = 10) -> list:
-        """从 Deck 获取复习词，不足时用默认词补充"""
-        with self._get_conn() as conn:
-            c = conn.cursor()
-            # 检查 tier 列是否存在
-            c.execute("PRAGMA table_info(deck)")
-            columns = {row[1] for row in c.fetchall()}
-            
-            if 'tier' in columns:
-                # 优先获取 tier 1-3 的词（需要复习的）
-                c.execute("""SELECT word, meaning, tier FROM deck 
-                            WHERE player_id = ? AND tier > 0 AND tier < 5
-                            ORDER BY tier ASC, RANDOM() LIMIT ?""",
-                         (player_id, count))
-                words = [{
-                    "word": row["word"], 
-                    "meaning": row["meaning"], 
-                    "tier": row["tier"],
-                    "is_review": True
-                } for row in c.fetchall()]
-            else:
-                # 旧表没有 tier 列
-                c.execute("""SELECT word, meaning FROM deck 
-                            WHERE player_id = ?
-                            ORDER BY RANDOM() LIMIT ?""",
-                         (player_id, count))
-                words = [{
-                    "word": row["word"], 
-                    "meaning": row["meaning"], 
-                    "tier": 1,
-                    "is_review": True
-                } for row in c.fetchall()]
-        
-        # 不足时用默认词补充
+        """兼容旧方法"""
+        words = self.get_words_by_tier_range(player_id, 1, 3, count)
         if len(words) < count:
-            needed = count - len(words)
-            existing_words = {w["word"] for w in words}
-            for dw in DEFAULT_REVIEW_WORDS:
-                if dw["word"] not in existing_words and needed > 0:
-                    words.append({**dw, "tier": 1, "is_review": True})
-                    needed -= 1
+            extra = self.get_words_by_tier_range(player_id, 0, 0, count - len(words))
+            words.extend(extra)
+        
+        for w in words:
+            w['is_review'] = w.get('tier', 0) > 0
+        
+        if len(words) < count:
+            for dw in DEFAULT_REVIEW_WORDS[:count - len(words)]:
+                words.append({**dw, "tier": 1, "is_review": True})
         
         return words[:count]
     
     def get_distractors(self, correct_meaning: str, count: int = 3) -> list:
-        """
-        获取干扰选项（真实释义）
-        排除正确答案
-        """
         with self._get_conn() as conn:
             c = conn.cursor()
             c.execute("""SELECT meaning FROM distractor_pool 
@@ -315,7 +544,6 @@ class GameDB:
             return [row['meaning'] for row in c.fetchall()]
     
     def add_to_distractor_pool(self, word: str, meaning: str, pos: str = "unknown"):
-        """添加词汇到干扰词库"""
         if not meaning or meaning == "待学习":
             return
         with self._get_conn() as conn:
@@ -325,21 +553,5 @@ class GameDB:
             except:
                 pass
     
-    def get_deck_count(self, player_id: int) -> int:
-        """获取 Deck 中词汇数量"""
-        with self._get_conn() as conn:
-            c = conn.cursor()
-            c.execute("SELECT COUNT(*) FROM deck WHERE player_id = ?", (player_id,))
-            return c.fetchone()[0]
-    
-    def record_run(self, player_id: int, floor_reached: int, victory: bool, words_learned: list):
-        """记录一次爬塔"""
-        with self._get_conn() as conn:
-            conn.execute("""INSERT INTO run_history (player_id, floor_reached, victory, words_learned) 
-                           VALUES (?, ?, ?, ?)""",
-                        (player_id, floor_reached, victory, json.dumps(words_learned, ensure_ascii=False)))
-            if victory:
-                conn.execute("UPDATE players SET total_runs = total_runs + 1, victories = victories + 1 WHERE id = ?",
-                           (player_id,))
-            else:
-                conn.execute("UPDATE players SET total_runs = total_runs + 1 WHERE id = ?", (player_id,))
+    def record_run(self, player_id: int, floor: int, victory: bool, words: list):
+        self.end_run(player_id, floor, victory, words)

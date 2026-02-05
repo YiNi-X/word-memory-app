@@ -1,5 +1,5 @@
 # ==========================================
-# 🔊 UI 组件 - v5.3 修复版
+# 🔊 UI 组件 - v5.4
 # ==========================================
 import sys
 from pathlib import Path
@@ -10,7 +10,7 @@ if str(_parent) not in sys.path:
 
 import streamlit as st
 import streamlit.components.v1 as components
-from models import WordTier, CardType, WordCard
+from models import WordTier, CardType, WordCard, CARD_STATS
 
 
 def play_audio(text: str):
@@ -29,17 +29,15 @@ def play_audio(text: str):
 
 
 def render_hud():
-    """顶部状态栏 - 圣遗物显示修复"""
+    """顶部状态栏"""
     player = st.session_state.player
     game_map = st.session_state.game_map
     
-    col_relics, col_stats = st.columns([1, 3])
+    col_relics, col_stats, col_deck = st.columns([1, 2, 1])
     
-    # 左侧：圣遗物面板
     with col_relics:
         render_relic_panel(player.relics)
     
-    # 右侧：状态栏
     with col_stats:
         with st.container(border=True):
             c1, c2, c3, c4 = st.columns([2, 1, 1, 1])
@@ -49,8 +47,8 @@ def render_hud():
                 st.progress(hp_ratio, f"❤️ {player.hp}/{player.max_hp}")
             
             with c2:
-                if player.block > 0:
-                    st.write(f"🛡️ {player.block}")
+                if player.armor > 0:
+                    st.write(f"🛡️ {player.armor}")
                 else:
                     st.write(f"🗺️ F{game_map.floor}")
             
@@ -58,54 +56,64 @@ def render_hud():
                 st.write(f"💰 {player.gold}G")
             
             with c4:
-                st.write(f"📦 {len(player.inventory)}")
+                st.write(f"🎴 {len(player.deck)}")
+    
+    # 右侧：卡组查看按钮
+    with col_deck:
+        render_deck_viewer(player.deck)
 
 
 def render_relic_panel(relics: list):
-    """
-    左上角圣遗物面板 - 修复版
-    分条显示所有圣遗物效果
-    """
+    """圣遗物面板"""
     from registries import RelicRegistry
     
     with st.container(border=True):
         st.markdown("**🏆 圣遗物**")
         
         if not relics:
-            st.caption("暂无圣遗物")
+            st.caption("暂无")
         else:
             for relic_id in relics:
                 relic = RelicRegistry.get(relic_id)
                 if relic:
-                    # 每个圣遗物显示为一行
-                    st.markdown(f"""
-                    <div class="relic-item">
-                        {relic.icon} <b>{relic.name}</b><br/>
-                        <small style="color: #888;">{relic.description}</small>
-                    </div>
-                    """, unsafe_allow_html=True)
+                    st.markdown(f"{relic.icon} **{relic.name}**")
                 else:
-                    # 未知圣遗物也显示
                     st.markdown(f"❓ {relic_id}")
+
+
+def render_deck_viewer(deck: list):
+    """右下角卡组查看器"""
+    with st.container(border=True):
+        st.markdown("**🎴 卡组**")
+        
+        if not deck:
+            st.caption("空")
+            return
+        
+        # 统计各类型卡牌
+        red_count = sum(1 for c in deck if c.card_type == CardType.RED_BERSERK)
+        blue_count = sum(1 for c in deck if c.card_type == CardType.BLUE_HYBRID)
+        gold_count = sum(1 for c in deck if c.card_type == CardType.GOLD_SUPPORT)
+        
+        st.caption(f"🟥{red_count} 🟦{blue_count} 🟨{gold_count}")
+        
+        with st.expander("📖 查看卡组"):
+            for card in deck:
+                color = card.card_type.color
+                st.markdown(f"""
+                <div style="border-left: 3px solid {color}; padding-left: 8px; margin: 4px 0;">
+                    <b>{card.word}</b> - {card.meaning}
+                </div>
+                """, unsafe_allow_html=True)
 
 
 def render_word_card(card: WordCard, idx: int, onclick_key: str = None, 
                      show_word: bool = True, show_meaning: bool = True):
-    """
-    渲染单词卡牌
-    
-    Args:
-        card: 单词卡牌
-        idx: 索引
-        onclick_key: 点击按钮的 key
-        show_word: 是否显示单词 (装填阶段隐藏)
-        show_meaning: 是否显示释义
-    """
+    """渲染单词卡牌 - v5.4"""
     card_type = card.card_type
     border_color = card_type.color
     
     with st.container(border=True):
-        # 顶部：类型标识
         st.markdown(f"""
         <div style="background: {border_color}; color: white; padding: 4px 8px; 
                     border-radius: 4px; font-size: 0.8em; text-align: center;">
@@ -113,11 +121,9 @@ def render_word_card(card: WordCard, idx: int, onclick_key: str = None,
         </div>
         """, unsafe_allow_html=True)
         
-        # 卡面内容
         if show_word:
             st.markdown(f"### {card.word}")
         else:
-            # 隐藏单词，只显示颜色
             st.markdown(f"### ???")
         
         if show_meaning and show_word:
@@ -125,13 +131,13 @@ def render_word_card(card: WordCard, idx: int, onclick_key: str = None,
         else:
             st.caption("???")
         
-        # 效果提示
-        if card_type == CardType.ATTACK:
-            st.markdown(f"⚔️ **{card.damage}** 伤害")
-        elif card_type == CardType.DEFENSE:
-            st.markdown(f"🛡️ **{card.block}** 护甲")
-        else:
-            st.markdown("✨ **抽 2 牌**")
+        # 效果提示 - 使用新的 CardType 枚举
+        if card_type == CardType.RED_BERSERK:
+            st.markdown(f"⚔️ **{card.damage}** | 💥 **-{card.penalty}**")
+        elif card_type == CardType.BLUE_HYBRID:
+            st.markdown(f"⚔️ **{card.damage}** | 🛡️ **{card.block}**")
+        elif card_type == CardType.GOLD_SUPPORT:
+            st.markdown(f"⚔️ **{card.damage}** | ⚡ **x2**")
         
         if onclick_key:
             return st.button("选择", key=onclick_key, use_container_width=True)
@@ -140,7 +146,7 @@ def render_word_card(card: WordCard, idx: int, onclick_key: str = None,
 
 
 def render_card_slot(idx: int, card: WordCard = None, on_remove: bool = False):
-    """渲染弹槽 - 只显示颜色，不显示单词"""
+    """渲染弹槽"""
     with st.container(border=True):
         if card:
             st.markdown(f"""
@@ -149,7 +155,6 @@ def render_card_slot(idx: int, card: WordCard = None, on_remove: bool = False):
                 {card.card_type.icon} {card.card_type.name_cn}
             </div>
             """, unsafe_allow_html=True)
-            # 不显示单词！
             st.markdown("**[ 已装填 ]**")
             
             if on_remove:
@@ -179,9 +184,7 @@ def render_enemy(enemy, show_intent: bool = True):
 
 
 def render_hand(hand: list, on_play: bool = False):
-    """
-    渲染手牌 - 战斗阶段只显示颜色
-    """
+    """渲染手牌"""
     if not hand:
         st.info("手牌已用完！")
         return None
@@ -193,7 +196,6 @@ def render_hand(hand: list, on_play: bool = False):
     
     for i, card in enumerate(hand):
         with cols[i]:
-            # 战斗阶段不显示单词
             if on_play:
                 if render_word_card(card, i, onclick_key=f"play_{i}", 
                                    show_word=False, show_meaning=False):
@@ -205,7 +207,7 @@ def render_hand(hand: list, on_play: bool = False):
 
 
 def render_learning_popup(card: WordCard):
-    """学习弹窗 - 红卡强制学习"""
+    """学习弹窗"""
     with st.container(border=True):
         st.markdown("### 📖 学习新词")
         
@@ -225,7 +227,7 @@ def render_learning_popup(card: WordCard):
 
 
 def render_quiz_test(card: WordCard, options: list):
-    """出牌测试 - 显示中文选英文"""
+    """出牌测试"""
     st.markdown("### ⚡ 记忆提取！")
     st.markdown(f"**{card.meaning}** 是哪个单词？")
     

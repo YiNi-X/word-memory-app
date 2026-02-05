@@ -1,6 +1,7 @@
 # ==========================================
-# 📦 数据模型 - Word=Card 战斗系统
+# 📦 数据模型 - v5.4 系统升级
 # ==========================================
+from __future__ import annotations
 from enum import Enum, IntEnum
 from dataclasses import dataclass, field
 from typing import List, Dict, Any, Optional
@@ -9,11 +10,15 @@ import streamlit as st
 
 class GamePhase(Enum):
     """游戏阶段"""
-    LOBBY = 0
-    MAP_SELECT = 1
-    IN_NODE = 2
-    GAME_OVER = 3
-    VICTORY = 4
+    MAIN_MENU = -1      # 主菜单
+    WORD_LIBRARY = -2   # 单词图书馆
+    LOBBY = 0           # 大厅 (旧)
+    MAP_SELECT = 1      # 地图选择
+    IN_NODE = 2         # 节点中
+    DRAFTING = 3        # 战后抓牌
+    GAME_OVER = 4       # 游戏结束
+    VICTORY = 5         # 胜利
+    TOWER_PREP = 6      # 爬塔前准备
 
 
 class NodeType(Enum):
@@ -27,67 +32,94 @@ class NodeType(Enum):
 
 
 class WordTier(IntEnum):
-    """莱特纳熟练度等级"""
-    UNKNOWN = 0       # 未接触
-    BLURRY = 1        # 模糊
-    CLEAR = 2         # 清晰
-    MASTERED = 3      # 掌握
-    INTERNALIZED = 4  # 内化
-    ARCHIVED = 5      # 封存
-    
-    @property
-    def display_name(self) -> str:
-        names = {0: "未接触", 1: "模糊", 2: "清晰", 3: "掌握", 4: "内化", 5: "封存"}
-        return names.get(self.value, "未知")
-    
-    @property
-    def color(self) -> str:
-        colors = {0: "#666666", 1: "#ff6b6b", 2: "#feca57", 3: "#48dbfb", 4: "#1dd1a1", 5: "#a29bfe"}
-        return colors.get(self.value, "#ffffff")
+    """单词熟练度等级"""
+    LV0 = 0  # 新词
+    LV1 = 1  # 模糊
+    LV2 = 2  # 清晰
+    LV3 = 3  # 掌握
+    LV4 = 4  # 精通
+    LV5 = 5  # 封存
 
 
-# 复习间隔配置
-REVIEW_INTERVALS = {
-    WordTier.BLURRY: (1, 3),
-    WordTier.CLEAR: (5, 10),
-    WordTier.MASTERED: (15, 25),
-    WordTier.INTERNALIZED: (30, 50),
-}
+class WordPriority(Enum):
+    """单词优先级"""
+    PINNED = "pinned"   # 用户手动添加
+    GHOST = "ghost"     # 历史失败
+    NORMAL = "normal"   # 普通
 
 
 # ==========================================
-# 🎴 卡牌系统
+# 🎴 卡牌系统 v5.4
 # ==========================================
 class CardType(Enum):
-    """卡牌类型"""
-    ATTACK = "attack"     # 🟥 红 - 攻击
-    DEFENSE = "defense"   # 🟦 蓝 - 防御
-    UTILITY = "utility"   # 🟨 金 - 功能
+    """卡牌类型 - v6.0"""
+    RED_BERSERK = "red"      # Lv0-1: 狂暴攻击
+    BLUE_HYBRID = "blue"     # Lv2-3: 混合型
+    GOLD_SUPPORT = "gold"    # Lv4-5: 辅助型
+    BLACK_CURSE = "black"    # 黑化卡牌（本局有效）
     
     @property
     def color(self) -> str:
-        colors = {"attack": "#e74c3c", "defense": "#3498db", "utility": "#f39c12"}
+        colors = {
+            "red": "#e74c3c",
+            "blue": "#3498db", 
+            "gold": "#f39c12",
+            "black": "#2c2c2c"
+        }
         return colors.get(self.value, "#ffffff")
     
     @property
     def icon(self) -> str:
-        icons = {"attack": "🟥", "defense": "🟦", "utility": "🟨"}
+        icons = {"red": "🟥", "blue": "🟦", "gold": "🟨", "black": "🖤"}
         return icons.get(self.value, "⬜")
     
     @property
     def name_cn(self) -> str:
-        names = {"attack": "攻击", "defense": "防御", "utility": "功能"}
+        names = {"red": "狂暴", "blue": "混合", "gold": "辅助", "black": "诅咒"}
         return names.get(self.value, "未知")
     
     @staticmethod
     def from_tier(tier: int) -> 'CardType':
         """根据熟练度返回卡牌类型"""
         if tier <= 1:
-            return CardType.ATTACK
+            return CardType.RED_BERSERK
         elif tier <= 3:
-            return CardType.DEFENSE
+            return CardType.BLUE_HYBRID
         else:
-            return CardType.UTILITY
+            return CardType.GOLD_SUPPORT
+
+
+# 卡牌属性配置
+CARD_STATS = {
+    CardType.RED_BERSERK: {
+        "damage": 25,
+        "block": 0,
+        "penalty": 10,  # 答错自伤
+        "draw": 0,
+        "buff": None
+    },
+    CardType.BLUE_HYBRID: {
+        "damage": 15,  # 从10改为15
+        "block": 10,
+        "penalty": 0,
+        "draw": 0,
+        "buff": None
+    },
+    CardType.GOLD_SUPPORT: {
+        "damage": 5,
+        "block": 0,
+        "penalty": 0,
+        "draw": 1,
+        "buff": "next_card_x2"  # 下张卡效果翻倍
+    },
+    CardType.BLACK_CURSE: {
+        "damage": 50,  # 黑卡高伤害
+        "block": 0,
+        "penalty": 75,  # 答错高惩罚 (从50改为75)
+        "draw": 0,
+        "buff": None
+    }
+}
 
 
 @dataclass
@@ -96,33 +128,48 @@ class WordCard:
     word: str
     meaning: str
     tier: int
-    card_type: CardType = None
-    learned: bool = False  # 是否已学习（红卡需要）
+    _card_type: CardType = field(default=None, repr=False)
+    learned: bool = False
+    consecutive_correct: int = 0
+    priority: str = "normal"
+    wrong_streak: int = 0      # 本局连续错误计数（用于降级逻辑）
+    is_blackened: bool = False # 是否已黑化（本局状态）
+    temp_level: str = None     # 局内颜色状态 (red/blue/gold/black)
+    is_temporary_buffed: bool = False # 蓝卡回血 5 Buff
     
-    def __post_init__(self):
-        if self.card_type is None:
-            self.card_type = CardType.from_tier(self.tier)
+    @property
+    def card_type(self) -> CardType:
+        """根据黑化状态或 tier 计算卡牌类型"""
+        if self.is_blackened:
+            return CardType.BLACK_CURSE
+        if self.temp_level:
+            mapping = {"red": CardType.RED_BERSERK, "blue": CardType.BLUE_HYBRID, "gold": CardType.GOLD_SUPPORT, "black": CardType.BLACK_CURSE}
+            return mapping.get(self.temp_level, CardType.from_tier(self.tier))
+        return CardType.from_tier(self.tier)
+    
+    @property
+    def stats(self) -> dict:
+        return CARD_STATS.get(self.card_type, {})
     
     @property
     def damage(self) -> int:
-        """攻击伤害"""
-        if self.card_type == CardType.ATTACK:
-            return 25
-        return 5
+        return self.stats.get("damage", 0)
     
     @property
     def block(self) -> int:
-        """护甲值"""
-        if self.card_type == CardType.DEFENSE:
-            return 10
-        return 0
+        return self.stats.get("block", 0)
     
     @property
-    def backfire(self) -> int:
-        """答错反噬"""
-        if self.card_type == CardType.ATTACK:
-            return 15
-        return 0
+    def penalty(self) -> int:
+        return self.stats.get("penalty", 0)
+    
+    @property
+    def draw(self) -> int:
+        return self.stats.get("draw", 0)
+    
+    @property
+    def buff(self) -> Optional[str]:
+        return self.stats.get("buff")
     
     def to_dict(self) -> dict:
         return {
@@ -130,26 +177,50 @@ class WordCard:
             "meaning": self.meaning,
             "tier": self.tier,
             "card_type": self.card_type.value,
-            "learned": self.learned
+            "learned": self.learned,
+            "consecutive_correct": self.consecutive_correct,
+            "priority": self.priority
         }
 
 
 @dataclass
 class Enemy:
-    """敌人"""
+    """敌人 v6.0 - 随层数动态增强"""
     name: str = "词汇魔物"
+    level: int = 1
     hp: int = 100
     max_hp: int = 100
     attack: int = 10
-    action_timer: int = 3      # 几回合后攻击
-    current_timer: int = 3     # 当前计时
-    intent: str = "attack"     # attack, charge, defend
+    base_attack: int = 10  # 基础攻击力
+    attack_count: int = 0  # 攻击次数（用于递增伤害）
+    action_timer: int = 2  # 每 2 回合攻击一次
+    current_timer: int = 2
+    intent: str = "attack"
+    is_elite: bool = False  # 是否精英怪
+    is_boss: bool = False   # 是否 Boss (虽然 Boss 战单独处理，但为了 registry 兼容需要此字段)
     
+    def __post_init__(self):
+        # 125 基础 + 8*层数，精英额外 +50
+        from config import ENEMY_HP_BASE, ENEMY_HP_ELITE, ENEMY_ATTACK
+        base_hp = ENEMY_HP_BASE + (self.level * 8)
+        if self.is_elite:
+            base_hp += 50 # 精英起始更高
+            self.base_attack = 15
+        else:
+            self.base_attack = ENEMY_ATTACK # 10
+        
+        self.hp = base_hp
+        self.max_hp = base_hp
+        self.attack = self.base_attack
+        self.current_timer = self.action_timer
+
     def tick(self) -> str:
-        """回合推进，返回意图"""
         self.current_timer -= 1
         if self.current_timer <= 0:
             self.current_timer = self.action_timer
+            # 攻击时递增伤害
+            self.attack = self.base_attack + (self.attack_count * 5)
+            self.attack_count += 1
             return "attack"
         return "charge"
     
@@ -162,105 +233,167 @@ class Enemy:
 
 class CombatPhase(Enum):
     """战斗阶段"""
-    LOADING = "loading"   # 装填阶段
-    BATTLE = "battle"     # 战斗阶段
-    VICTORY = "victory"   # 胜利
-    DEFEAT = "defeat"     # 失败
+    LOADING = "loading"
+    BATTLE = "battle"
+    VICTORY = "victory"
+    DEFEAT = "defeat"
 
 
 @dataclass
 class CardCombatState:
-    """卡牌战斗状态"""
-    # 词库
-    word_pool: List[WordCard] = field(default_factory=list)
-    
-    # 弹仓 (已装填)
-    hand: List[WordCard] = field(default_factory=list)
-    hand_size: int = 6
-    
-    # 敌人
+    """卡牌战斗状态 v6.0"""
+    player: Player
+    deck: List[WordCard]
     enemy: Enemy = None
-    
-    # 玩家状态
-    player_block: int = 0
-    
-    # 当前阶段
+    word_pool: List[WordCard] = field(default_factory=list) # 用于干扰项生成
+    hand: List[WordCard] = field(default_factory=list)
+    discard: List[WordCard] = field(default_factory=list)
+    draw_pile: List[WordCard] = field(default_factory=list)
+    hand_size: int = 5
     phase: CombatPhase = CombatPhase.LOADING
-    
-    # 当前出牌
     current_card: Optional[WordCard] = None
     current_options: Optional[List[str]] = None
-    
-    # 统计
     turns: int = 0
+    next_card_x2: bool = False  # 下张卡效果翻倍
     
     def __post_init__(self):
         if self.enemy is None:
             self.enemy = Enemy()
+            
+        # 同步玩家手牌上限
+        if self.player:
+            self.hand_size = self.player.hand_size
+        
+        # 初始化抽牌堆 (洗牌)
+        self.draw_pile = self.deck.copy()
+        import random
+        random.shuffle(self.draw_pile)
+        
+        # 初始化词池 (用于干扰项)
+        self.word_pool = self.deck.copy()
+        
+        # 初始护甲重置
+        self.player.reset_block()
     
     def load_card(self, card: WordCard) -> bool:
-        """装填卡牌到弹仓"""
         if len(self.hand) >= self.hand_size:
             return False
         self.hand.append(card)
         return True
     
     def unload_card(self, card: WordCard):
-        """移除卡牌"""
         if card in self.hand:
             self.hand.remove(card)
     
-    def count_attack_cards(self) -> int:
-        """统计红卡数量"""
-        return sum(1 for c in self.hand if c.card_type == CardType.ATTACK)
+    def count_by_type(self, card_type: CardType) -> int:
+        return sum(1 for c in self.hand if c.card_type == card_type)
     
     def can_start_battle(self) -> bool:
-        """检查能否开始战斗"""
-        return len(self.hand) == self.hand_size and self.count_attack_cards() >= 3
+        # 移除红卡限制：只要有 3+ 张卡即可开战
+        return len(self.hand) >= 3
     
     def start_battle(self):
-        """开始战斗"""
         self.phase = CombatPhase.BATTLE
         self.turns = 0
     
     def play_card(self, card: WordCard):
-        """出牌"""
         self.current_card = card
         if card in self.hand:
             self.hand.remove(card)
+            self.discard.append(card)  # 打出的牌进入弃牌堆
+    
+    def recycle_discard(self) -> bool:
+        """将弃牌堆洗回抽牌堆（杀戮尖塔机制）"""
+        if not self.discard:
+            return False
+        import random
+        self.draw_pile = self.discard.copy()
+        random.shuffle(self.draw_pile)
+        self.discard.clear()
+        return True
+    
+    def draw_card(self) -> Optional[WordCard]:
+        """按权重从抽牌堆抽一张牌到手牌: 红(0.6) > 蓝(0.3) > 金(0.1)"""
+        if not self.draw_pile:
+            if not self.recycle_discard():
+                return None
+        
+        if self.draw_pile:
+            import random
+            # 定义权重映射
+            weight_map = {
+                CardType.RED_BERSERK: 0.6,
+                CardType.BLUE_HYBRID: 0.3,
+                CardType.GOLD_SUPPORT: 0.1,
+                CardType.BLACK_CURSE: 0.6  # 黑卡权重等同红卡
+            }
+            
+            # v6.0 加权抽取逻辑: Red > Blue > Gold
+            candidates = self.draw_pile
+            weights = []
+            for c in candidates:
+                if c.card_type == CardType.RED_BERSERK: weights.append(60)
+                elif c.card_type == CardType.BLUE_HYBRID: weights.append(30)
+                elif c.card_type == CardType.GOLD_SUPPORT: weights.append(10)
+                else: weights.append(10)
+            
+            # 加权随机选择一张
+            selected = random.choices(candidates, weights=weights, k=1)[0]
+            
+            # 从抽牌堆移除并添加到手牌
+            self.draw_pile.remove(selected)
+            self.hand.append(selected)
+            return selected
+        return None
 
 
 @dataclass
 class Player:
     """玩家"""
     id: int = 1
-    gold: int = 0
+    gold: int = 50
     hp: int = 100
     max_hp: int = 100
-    block: int = 0
+    armor: int = 0                    # 护甲值
+    deck: List[WordCard] = field(default_factory=list)  # 当前卡组
     inventory: List[str] = field(default_factory=list)
     relics: List[str] = field(default_factory=list)
     current_room: int = 0
+    # v6.0 新增属性
+    armor: int = 0                    # 护甲值
+    hand_size: int = 5                # 手牌上限
+    purchase_counts: Dict[str, int] = field(default_factory=lambda: {"red": 0, "blue": 0, "gold": 0})
+    deck_limit: int = 9               # 卡组上限
+    blue_card_heal_buff: bool = False # 蓝卡回血 Buff (兼容旧代码，新逻辑在卡牌上)
+    gold_card_purchased: bool = False # 是否已购买金卡 (兼容旧字段)
     
     def change_hp(self, amount: int):
-        # 先扣护甲
-        if amount < 0 and self.block > 0:
-            absorbed = min(self.block, -amount)
-            self.block -= absorbed
+        # v6.0 贪婪之理：受到伤害翻倍
+        if amount < 0 and st.session_state.get("_greedy_curse", False):
+            amount *= 2
+            st.toast("⚠️ 贪婪反噬！受到伤害翻倍", icon="🤑")
+
+        # 护甲优先逻辑
+        if amount < 0 and self.armor > 0:
+            absorbed = min(self.armor, -amount)
+            self.armor -= absorbed
             amount += absorbed
             if absorbed > 0:
                 st.toast(f"🛡️ 护甲吸收 {absorbed}", icon="🛡️")
         
         self.hp += amount
+        # 锁定最大 HP 逻辑：change_hp 只能在 [0, max_hp] 波动
         self.hp = max(0, min(self.hp, self.max_hp))
         
-        if amount < 0:
+        if self.hp <= 0:
+            st.error("💀 你由于体力耗尽倒下了...")
+        elif amount < 0:
             st.toast(f"💔 HP {amount}", icon="🩸")
         elif amount > 0:
             st.toast(f"💚 HP +{amount}", icon="🌿")
     
-    def add_block(self, amount: int):
-        self.block += amount
+    def add_armor(self, amount: int):
+        self.armor += amount
         st.toast(f"🛡️ +{amount} 护甲", icon="🛡️")
     
     def add_gold(self, amount: int):
@@ -271,11 +404,14 @@ class Player:
         return self.hp <= 0
     
     def reset_block(self):
-        """回合结束重置护甲"""
-        self.block = 0
+        self.armor = 0
     
     def advance_room(self):
         self.current_room += 1
+    
+    def add_card_to_deck(self, card: WordCard):
+        """添加卡牌到卡组"""
+        self.deck.append(card)
 
 
 @dataclass
@@ -290,10 +426,28 @@ class Node:
 @dataclass
 class BossState:
     """Boss 战状态"""
-    phase: str = "loading"
-    article: Optional[Dict] = None
-    quizzes: Optional[Dict] = None
+    boss_hp: int = 200
+    boss_max_hp: int = 200
+    armor: int = 0
+    phase: str = 'article'  # 'article', 'quiz', 'victory'
+    article: dict = None
+    quizzes: dict = None
     quiz_idx: int = 0
-    boss_hp: int = 100
-    boss_max_hp: int = 100
+    turn: int = 0
+    post_quiz_attack: int = 20 # 狂暴后基础伤害
+    triggered_100hp_shield: bool = False # 是否触发过 100HP 护盾
     api_error: Optional[str] = None
+    # v6.0 新增属性
+    armor: int = 0                        # Boss 护甲
+    triggered_100hp_shield: bool = False  # 是否已触发100血护甲
+    turn: int = 0                         # 回合计数
+
+
+@dataclass
+class RunState:
+    """存档状态"""
+    player: Optional[Player] = None
+    floor: int = 0
+    total_floors: int = 6
+    deck: List[dict] = field(default_factory=list)
+    in_progress: bool = False

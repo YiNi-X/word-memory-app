@@ -1,12 +1,13 @@
 # ==========================================
-# 🧠 AI 服务层 (Kimi API)
+# 🧠 AI 服务层 (Kimi API) - v5.4
 # ==========================================
 import json
 import re
 import sys
+import threading
 from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor
 
-# 添加当前目录到路径
 _current_dir = Path(__file__).parent
 if str(_current_dir) not in sys.path:
     sys.path.insert(0, str(_current_dir))
@@ -29,9 +30,7 @@ class CyberMind:
         self._last_error = None
     
     def _call(self, system: str, user: str, retries: int = 3) -> dict:
-        """
-        调用 Kimi API，自动处理 JSON 解析和错误重试
-        """
+        """调用 Kimi API，自动处理 JSON 解析和错误重试"""
         self._last_error = None
         
         for attempt in range(retries):
@@ -47,7 +46,6 @@ class CyberMind:
                 )
                 content = response.choices[0].message.content
                 
-                # 清洗 Markdown 代码块
                 if "```" in content:
                     match = re.search(r"```(?:json)?\s*(.*?)\s*```", content, re.DOTALL)
                     if match:
@@ -72,117 +70,111 @@ class CyberMind:
         return self._last_error
     
     def generate_article(self, words: list, target_word_count: int = 200) -> dict:
-        """
-        生成包含所有单词的 CET-6 难度文章
+        """生成包含所有单词的 CET-6 难度文章"""
+        if not words:
+            return MockGenerator.generate_article([])
         
-        Args:
-            words: 单词列表 [{"word": "xxx", "meaning": "xxx"}, ...]
-            target_word_count: 目标文章词数，与单词数成正比
+        if isinstance(words[0], dict):
+            word_list = [w.get('word', str(w)) for w in words]
+        else:
+            word_list = [str(w) for w in words]
         
-        Returns:
-            {"article_english": "...", "article_chinese": "..."}
-        """
-        word_list = [w['word'] for w in words]
-        
-        # 文章长度与单词数成正比
-        min_words = max(100, len(words) * 10)
-        max_words = max(150, len(words) * 15)
+        min_words = max(120, len(word_list) * 12)
+        max_words = max(180, len(word_list) * 18)
         
         prompt = f"""
-## 角色设定
-你是一位《经济学人》(The Economist) 或《纽约时报》的资深专栏作家。你的文风专业、逻辑严密，擅长将离散的概念串联成有深度的社会、科技或文化评论。
+## 角色
+你是《经济学人》(The Economist) 资深专栏作家，擅长将专业词汇自然融入叙事。
 
-## 任务目标
-请基于用户提供的【单词列表】，撰写一篇 CET-6 (中国大学英语六级) 难度的短文。
+## 任务
+将以下单词列表融入一篇 **CET-6 阅读理解** 难度的短文。
 
-## 严格要求
-1. **主题与逻辑**：严禁生硬堆砌单词。文章必须有一个明确的核心主题（如数字时代的焦虑、环保悖论、职场心理等），所有单词必须自然地服务于上下文。
-2. **语言标准**：
-   - **难度**：CET-6/考研英语级别。
-   - **句式**：必须包含至少 2 种复杂句型（如：倒装句、虚拟语气、独立主格、定语从句），避免通篇简单句。
-   - **篇幅**：{min_words} - {max_words} 词。
-3. **格式高亮（关键）**：
-   - 必须且只能将【单词列表】中的词（包含其时态/复数变形）用 `<span class='highlight-word'>...</span>` 包裹。
-   - 例如：如果输入 "apply"，文中用了 "applied"，请输出 `<span class='highlight-word'>applied</span>`。
-4. **翻译要求**：
-   - 提供意译而非直译。译文应流畅优美，符合中文表达习惯（信达雅）。
+## ⚠️ 严禁（违反将导致失败）
+1. ❌ **禁止词汇堆砌**：
+   - 错误示例: "Words like temptation, trajectory, leverage are important."
+   - 错误示例: "Learners often encounter A, B, C, D, E."
+2. ❌ **禁止使用罗列句式**：
+   - 禁止: "such as", "including", "like A, B, C"
+   - 禁止: "terms like", "words such as"
+
+## ✅ 必须遵守
+1. **每个单词必须出现在不同的句子中**
+2. **单词必须是句子的核心成分**（主语/谓语/宾语/表语）
+3. **文章必须讲述一个完整的故事或论点**
+4. **使用多样句式**：定语从句、被动语态、倒装句
+5. **高亮格式**：`<span class='highlight-word'>word</span>`（包括时态变形）
+
+## 📝 优秀示例
+单词: ["temptation", "trajectory"]
+输出:
+> The <span class='highlight-word'>temptation</span> to prioritize short-term gains 
+> ultimately disrupted the startup's growth 
+> <span class='highlight-word'>trajectory</span>. This mistake served as a critical lesson.
+
+## 篇幅
+{min_words} - {max_words} 词
 
 ## 输出格式
-请仅返回纯 JSON 格式，不要使用 Markdown 代码块包裹：
+纯 JSON，不要 Markdown 代码块：
 {{
-    "article_english": "Your English article content here...",
-    "article_chinese": "你的中文翻译内容..."
+    "article_english": "英文文章（高亮标记单词）",
+    "article_chinese": "中文翻译（信达雅，意译）"
 }}
 """
-        return self._call(prompt, f"单词列表: {word_list}")
+        result = self._call(prompt, f"单词列表: {word_list}")
+        return result if result else MockGenerator.generate_article(words)
     
     def generate_quiz(self, words: list, article_context: str) -> dict:
-        """
-        基于文章生成阅读理解题
+        """基于文章生成阅读理解题"""
+        if not words:
+            return MockGenerator.generate_quiz([])
         
-        Returns:
-            {"quizzes": [{"question": "...", "options": [...], "answer": "...", "explanation": "...", "damage": 25}, ...]}
-        """
-        word_list = [w['word'] for w in words]
-        quiz_count = max(3, min(len(words) // 3, 6))  # 3-6 道题
+        if isinstance(words[0], dict):
+            word_list = [w.get('word', str(w)) for w in words]
+        else:
+            word_list = [str(w) for w in words]
+        
+        quiz_count = max(3, min(len(word_list) // 3, 6))
         
         prompt = f"""
-## 角色设定
-你是一位经验丰富的 CET-6 (六级) 和 IELTS (雅思) 命题组专家。你需要根据提供的单词和文章内容，设计高质量的阅读理解或词汇辨析题。
+## 任务
+根据单词和文章，设计 {quiz_count} 道阅读理解题。
 
-## 输入数据
-1. 考察单词: {word_list}
-2. 文章内容:
-{article_context}
-
-## 出题标准 (Strict Guidelines)
-1. **深度结合语境**：
-   - 严禁出简单的"词义匹配"题。
-   - 题目必须考察单词在**当前特定文章语境**下的深层含义、隐喻或它对情节发展的推动作用。
-   - 正确选项必须是文章中具体信息的推论，而不仅仅是单词的字典定义。
-
-2. **干扰项设计 (Distractors)**：
-   - 错误选项必须具有迷惑性（例如：通过偷换概念、因果倒置、或利用单词的字面意思设置陷阱）。
-   - 避免出现一眼就能排除的荒谬选项。
-
-3. **题目类型**：
-   - 请混合设计：词汇推断题 (Vocabulary in Context) 和 细节理解题 (Detail Comprehension)。
-
-4. **题目数量**：{quiz_count} 道题
+## 题目要求
+1. **考察重点**：单词在**当前文章语境**下的含义（Contextual Meaning）。
+2. **选项设计**（重要）：
+   - 必须包含 4 个选项（A/B/C/D）。
+   - **所有选项必须是中文**。
+   - 正确选项：该单词在文中的含义。
+   - 干扰选项：该单词的其他含义，或形近词/意近词的含义。**严禁出现 "Something else", "None of the above" 等凑数选项。**
+3. **难度**：中等偏难，干扰项要有迷惑性。
 
 ## 输出格式
-请返回纯 JSON 格式，不要使用 Markdown 代码块。
-JSON 结构如下（注意：key 必须严格对应）：
 {{
     "quizzes": [
         {{
-            "question": "题干内容 (英文)...",
-            "options": ["A. 选项内容", "B. 选项内容", "C. 选项内容", "D. 选项内容"],
-            "answer": "A. 选项内容",
+            "question": "What is the meaning of 'word' in the context?",
+            "options": ["A. 正确含义", "B. 干扰含义1", "C. 干扰含义2", "D. 干扰含义3"],
+            "answer": "A. 正确含义",
             "damage": 25,
-            "explanation": "中文解析：1. 为什么选这个答案（结合文章引用）；2. 其他选项为什么错（解析干扰点）。"
+            "explanation": "解析：在文中..."
         }}
     ]
 }}
 """
-        return self._call(prompt, "请为这些单词设计题目")
+        result = self._call(prompt, "请设计题目")
+        return result if result else MockGenerator.generate_quiz(words)
     
     def analyze_words(self, words: list) -> dict:
-        """
-        分析单词，生成释义、词根、场景联想
-        
-        Returns:
-            {"words": [{"word": "...", "meaning": "...", "root": "...", "imagery": "...", "is_core": true/false}, ...]}
-        """
+        """分析单词，生成释义"""
         prompt = """
 你是一个英语教学专家。分析单词并提供：
 1. meaning: 中文释义
 2. root: 词根词缀分析
 3. imagery: 记忆场景联想
-4. is_core: 是否为 CET-6/考研高频词汇
 
 返回 JSON:
-{ "words": [ {"word": "...", "meaning": "...", "root": "...", "imagery": "...", "is_core": true/false} ] }
+{ "words": [ {"word": "...", "meaning": "...", "root": "...", "imagery": "..."} ] }
 """
         return self._call(prompt, f"单词列表: {words}")
 
@@ -195,38 +187,200 @@ class MockGenerator:
     
     @staticmethod
     def generate_article(words: list) -> dict:
-        word_list = [w['word'] for w in words]
-        highlighted = " ".join([f"<span class='highlight-word'>{w}</span>" for w in word_list[:5]])
+        """使用模板生成文章，将单词自然融入叙事"""
+        word_list = []
+        if words:
+            for w in words:
+                if isinstance(w, dict):
+                    word_list.append(w.get('word', str(w)))
+                else:
+                    word_list.append(str(w))
+        
+        if not word_list:
+            word_list = ["challenge", "strategy", "innovation", "perspective", "outcome"]
+        
+        # 确保至少有5个词
+        while len(word_list) < 5:
+            word_list.append("approach")
+        
+        w = word_list[:5]
+        h = lambda x: f"<span class='highlight-word'>{x}</span>"
         
         return {
             "article_english": f"""
-In the realm of modern vocabulary acquisition, learners often encounter words like {highlighted}. 
-These terms, while seemingly complex, carry profound meanings that shape our understanding of the world.
-The journey of mastering vocabulary is not merely about memorization, but about comprehending 
-the subtle nuances that each word brings to our linguistic arsenal.
+The tech industry faces a profound <span class='highlight-word'>{w[0]}</span> that few executives anticipated. 
+When Sarah Chen took over as CEO, her first priority was to {h(w[1])} a complete restructuring of the company's R&D department.
+
+The board, initially skeptical of her unconventional methods, soon witnessed a remarkable transformation. 
+Her {h(w[2])} approach not only reduced costs by thirty percent but also fostered a culture of creativity 
+that had been absent for years. Critics who had dismissed her {h(w[3])} as naive were forced to reconsider 
+their assumptions.
+
+By the end of her first year, the results spoke for themselves: a forty percent increase in productivity 
+and a renewed sense of purpose among employees. The {h(w[4])} exceeded all expectations, 
+proving that bold leadership, when executed with precision, can reshape even the most entrenched organizations.
 """,
             "article_chinese": f"""
-在现代词汇习得领域，学习者经常会遇到诸如 {', '.join(word_list[:5])} 等词汇。
-这些术语虽然看似复杂，但却承载着深刻的含义，塑造着我们对世界的理解。
-掌握词汇的旅程不仅仅是死记硬背，更是要理解每个词给我们语言库带来的微妙内涵。
+科技行业正面临一个鲜有高管预见到的深刻{w[0]}。当陈思雅接任CEO时，她的首要任务是对公司研发部门进行彻底的{w[1]}重组。
+
+董事会最初对她非传统的方法持怀疑态度，但很快便见证了令人瞩目的转变。她{w[2]}的方式不仅将成本降低了三成，
+还培育了一种多年来一直缺失的创新文化。那些曾嘲笑她{w[3]}太过天真的批评者不得不重新审视自己的判断。
+
+她上任第一年结束时，结果不言自明：生产力提升了四成，员工们重新找到了工作的意义。这个{w[4]}超出了所有人的预期，
+证明了大胆的领导力在精准执行时，能够重塑即便是最根深蒂固的组织。
 """
         }
     
     @staticmethod
     def generate_quiz(words: list) -> dict:
-        return {
-            "quizzes": [
-                {
-                    "question": f"What is the primary meaning of '{words[0]['word']}' in the context?",
-                    "options": [
-                        f"A. {words[0]['meaning']}",
-                        "B. Something completely different",
-                        "C. A random meaning",
-                        "D. None of the above"
-                    ],
-                    "answer": f"A. {words[0]['meaning']}",
-                    "damage": 20,
-                    "explanation": f"在文章语境中，{words[0]['word']} 意为 {words[0]['meaning']}。"
+        # 安全获取单词和释义
+        word_list = []
+        if words:
+            for w in words:
+                if isinstance(w, dict):
+                    word_list.append({
+                        "word": w.get('word', 'vocabulary'),
+                        "meaning": w.get('meaning', '词汇')
+                    })
+                else:
+                    word_list.append({"word": str(w), "meaning": "词汇"})
+        
+        if not word_list:
+            word_list = [{"word": "vocabulary", "meaning": "词汇"}]
+        
+        quizzes = []
+        # 预定义一组干扰项库 (通用高频词义)
+        distractors_pool = [
+            "巨大的，宏伟的", "微小的，精致的", "迅速的，敏捷的", "缓慢的，迟钝的",
+            "困难的，艰巨的", "容易的，简单的", "积极的，乐观的", "消极的，悲观的",
+            "永久的，持久的", "暂时的，短暂的", "准确的，精确的", "模糊的，不清楚的",
+            "美丽的，迷人的", "丑陋的，难看的", "重要的，关键的", "琐碎的，不重要的"
+        ]
+        
+        quizzes = []
+        for i, w in enumerate(word_list[:min(len(word_list), 5)]): # 最多生成5题
+            correct_meaning = w['meaning']
+            
+            # 构建干扰项
+            current_distractors = random.sample(distractors_pool, 3)
+            # 确保干扰项和正确答案不重复 (简单检查)
+            current_distractors = [d for d in current_distractors if d != correct_meaning]
+            while len(current_distractors) < 3:
+                current_distractors.append("其他的含义")
+                
+            options_raw = [correct_meaning] + current_distractors[:3]
+            random.shuffle(options_raw)
+            
+            # 找到正确答案的新索引
+            correct_idx = options_raw.index(correct_meaning)
+            letters = ['A', 'B', 'C', 'D']
+            
+            formatted_options = [f"{letters[j]}. {opt}" for j, opt in enumerate(options_raw)]
+            answer_str = formatted_options[correct_idx]
+            
+            quizzes.append({
+                "question": f"What is the meaning of '{w['word']}' in the context?",
+                "options": formatted_options,
+                "answer": answer_str,
+                "damage": 20,
+                "explanation": f"在文章语境中，{w['word']} 意为 {w['meaning']}。"
+            })
+        
+        return {"quizzes": quizzes if quizzes else [
+            {
+                "question": "Which word best describes the text?",
+                "options": ["A. Learning", "B. Playing", "C. Sleeping", "D. Running"],
+                "answer": "A. Learning",
+                "damage": 20,
+                "explanation": "文章主要讨论学习。"
+            }
+        ]}
+
+
+# ==========================================
+# 🚀 后台预加载器 (Elite 战斗时预生成 Boss 文章)
+# ==========================================
+class BossPreloader:
+    """
+    在 Elite 战斗时，后台预生成 Boss 文章
+    使用多线程避免阻塞游戏
+    """
+    
+    _executor = ThreadPoolExecutor(max_workers=1)
+    _future = None
+    _result = None
+    _loading = False
+    
+    @classmethod
+    def start_preload(cls, words: list, ai: CyberMind = None):
+        """
+        开始后台预加载
+        
+        Args:
+            words: 当前卡组单词列表
+            ai: CyberMind 实例
+        """
+        if cls._loading:
+            return  # 已在加载中
+        
+        cls._loading = True
+        cls._result = None
+        
+        def _generate():
+            try:
+                _ai = ai or CyberMind()
+                # 生成文章
+                article = _ai.generate_article(words)
+                if not article:
+                    article = MockGenerator.generate_article(words)
+                
+                # 生成题目
+                quizzes = _ai.generate_quiz(
+                    words, 
+                    article.get('article_english', '')
+                )
+                if not quizzes:
+                    quizzes = MockGenerator.generate_quiz(words)
+                
+                cls._result = {
+                    'article': article,
+                    'quizzes': quizzes
                 }
-            ]
-        }
+            except Exception as e:
+                cls._result = {
+                    'article': MockGenerator.generate_article(words),
+                    'quizzes': MockGenerator.generate_quiz(words),
+                    'error': str(e)
+                }
+            finally:
+                cls._loading = False
+        
+        cls._future = cls._executor.submit(_generate)
+    
+    @classmethod
+    def get_result(cls) -> dict:
+        """获取预加载结果。如果还在加载，返回 None"""
+        if cls._loading:
+            return None
+        return cls._result
+    
+    @classmethod
+    def is_loading(cls) -> bool:
+        return cls._loading
+    
+    @classmethod
+    def wait_result(cls, timeout: float = 30) -> dict:
+        """等待预加载完成"""
+        if cls._future:
+            try:
+                cls._future.result(timeout=timeout)
+            except:
+                pass
+        return cls._result
+    
+    @classmethod
+    def reset(cls):
+        """重置预加载器"""
+        cls._result = None
+        cls._loading = False
+        cls._future = None

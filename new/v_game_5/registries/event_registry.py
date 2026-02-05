@@ -49,17 +49,17 @@ class EventConfig:
 
 
 # ==========================================
-# 🎯 事件定义 (在此添加新事件)
+# 🎯 事件定义 (v6.0 更新)
 # ==========================================
 EVENTS: Dict[str, EventConfig] = {
     
     "FOUNTAIN": EventConfig(
         name="遗忘之泉",
         icon="🌊",
-        description="一汪清澈的泉水散发着神秘的光芒...",
-        flavor_text="传说喝下泉水可以短暂遗忘痛苦。",
+        description="泉水中浮现出一个单词的影子...",
+        flavor_text="或许答对了可以拯救一张黑卡。",
         choices=[
-            EventChoice(text="饮用泉水 (+25 HP)", effect="heal", value=25),
+            EventChoice(text="填写单词 (成功可恢复黑卡)", effect="fill_blank_test"),
             EventChoice(text="离开", effect="none", value=0),
         ]
     ),
@@ -100,9 +100,9 @@ EVENTS: Dict[str, EventConfig] = {
     "TREASURE": EventConfig(
         name="遗忘宝箱",
         icon="📦",
-        description="一个被遗忘的宝箱静静躺在角落...",
+        description="一个被遗忘的宝箱静静躺在角落...似乎有危险的气息。",
         choices=[
-            EventChoice(text="打开宝箱 (+30-50 金币)", effect="gold_random", value=(30, 50)),
+            EventChoice(text="打开宝箱 (50%概率: -20HP / +30-50金币)", effect="risky_treasure"),
             EventChoice(text="谨慎离开", effect="none", value=0),
         ]
     ),
@@ -113,8 +113,31 @@ EVENTS: Dict[str, EventConfig] = {
         description="一个流浪铁匠在此扎营...",
         choices=[
             EventChoice(text="休息 (+30 HP)", effect="heal", value=30),
-            EventChoice(text="升级最大HP (40G → +15 最大HP)", effect="max_hp", value=15, cost_gold=40),
+            EventChoice(text="升级蓝卡 (100G, 蓝卡附加回血效果)", effect="upgrade_blue_cards", cost_gold=100),
             EventChoice(text="快速离开", effect="none", value=0),
+        ]
+    ),
+    
+    # v6.0 新增事件
+    "FALLEN_ADVENTURER": EventConfig(
+        name="勇者之尸",
+        icon="💀",
+        description="前面似乎趴着一个人...",
+        flavor_text="不知道发生了什么，但包里可能有好东西。",
+        choices=[
+            EventChoice(text="迅速远离", effect="none", value=0),
+            EventChoice(text="翻翻背包有什么", effect="adventurer_loot"),
+        ]
+    ),
+    
+    "MYSTERIOUS_BOOK": EventConfig(
+        name="神秘书籍",
+        icon="📕",
+        description="有一本书静静地躺在你前面...",
+        flavor_text="书页间似乎飘散着奇异的气息。",
+        choices=[
+            EventChoice(text="翻阅", effect="book_read"),
+            EventChoice(text="离开", effect="none", value=0),
         ]
     ),
 }

@@ -13,10 +13,12 @@ from registries.combat_registry import CombatRegistry, COMBAT_TYPES
 from registries.event_registry import EventRegistry, EVENTS
 from registries.shop_registry import ShopRegistry, SHOP_ITEMS
 from registries.relic_registry import RelicRegistry, RELICS
+from registries.card_effect_registry import CardEffectRegistry, EffectContext
 
 __all__ = [
     'CombatRegistry', 'COMBAT_TYPES',
     'EventRegistry', 'EVENTS',
     'ShopRegistry', 'SHOP_ITEMS',
-    'RelicRegistry', 'RELICS'
+    'RelicRegistry', 'RELICS',
+    'CardEffectRegistry', 'EffectContext'
 ]

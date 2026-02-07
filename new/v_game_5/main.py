@@ -1,4 +1,4 @@
-"""
+﻿"""
 单词尖塔 v5.4 - Spire of Vocab
 ====================================
 Major System Upgrade:
@@ -13,6 +13,7 @@ Major System Upgrade:
 import streamlit as st
 import random
 import threading
+import queue
 import sys
 from pathlib import Path
 
@@ -20,10 +21,11 @@ _current_dir = Path(__file__).parent
 if str(_current_dir) not in sys.path:
     sys.path.insert(0, str(_current_dir))
 
-from config import TOTAL_FLOORS, INITIAL_GOLD
+from config import TOTAL_FLOORS, INITIAL_GOLD, KIMI_API_KEY
 from database import GameDB
 from ai_service import CyberMind, MockGenerator
 from models import GamePhase, NodeType, Player, WordCard, CardType
+from state_utils import reset_combat_flags
 from systems import WordPool, MapSystem
 from registries import EventRegistry
 from ui.components import render_hud
@@ -67,11 +69,70 @@ class GameManager:
         
         if 'boss_article_cache' not in st.session_state:
             st.session_state.boss_article_cache = None
+        if 'boss_generation_queue' not in st.session_state:
+            st.session_state.boss_generation_queue = queue.Queue()
+
+    def _serialize_card_pool(self, cards: list) -> list:
+        serialized = []
+        for c in cards or []:
+            if isinstance(c, dict):
+                serialized.append({
+                    "word": c.get("word"),
+                    "meaning": c.get("meaning", ""),
+                    "tier": c.get("tier", 0),
+                    "priority": c.get("priority", "normal"),
+                })
+                continue
+            serialized.append({
+                "word": c.word,
+                "meaning": c.meaning,
+                "tier": c.tier,
+                "priority": getattr(c, "priority", "normal"),
+            })
+        return serialized
+
+    def _build_run_state(self) -> dict:
+        player = st.session_state.player
+        return {
+            "gold": player.gold,
+            "hp": player.hp,
+            "max_hp": player.max_hp,
+            "armor": player.armor,
+            "relics": list(player.relics),
+            "inventory": list(player.inventory),
+            "game_word_pool": self._serialize_card_pool(st.session_state.get("game_word_pool", [])),
+        }
+
+    def _consume_boss_queue(self):
+        q = st.session_state.get("boss_generation_queue")
+        if not q:
+            return
+        try:
+            while True:
+                result = q.get_nowait()
+                st.session_state.boss_article_cache = result
+                st.session_state.boss_generation_status = 'ready'
+        except queue.Empty:
+            return
+
+
+def _warn_missing_kimi_key():
+    api_key = ""
+    try:
+        api_key = st.secrets.get("KIMI_API_KEY", "")
+    except Exception:
+        api_key = ""
+    if not api_key:
+        api_key = KIMI_API_KEY
+    if not api_key:
+        st.session_state._warned_missing_kimi = True
+        st.error("⚠️ KIMI_API_KEY 未配置，AI 内容将使用 Mock 生成。")
     
     def start_new_game(self):
         """开始新游戏"""
         player_id = st.session_state.db_player["id"]
         db = st.session_state.db
+        reset_combat_flags()
         
         # 1. 获取本局游戏池 (25红+12蓝+5金 = 42张)
         from config import GAME_POOL_RED, GAME_POOL_BLUE, GAME_POOL_GOLD
@@ -80,7 +141,7 @@ class GameManager:
         game_pool = db.get_game_pool(player_id, GAME_POOL_RED, GAME_POOL_BLUE, GAME_POOL_GOLD)
         
         if len(game_pool) < 10:
-            st.warning("⚠️ 词库不足！请先在 Word Library 添加至少 10 个单词")
+            st.warning("⚠️ 词库不足！请先在单词图书馆添加至少 10 个单词")
             return
         
         # 2. 从池中抽取初始卡组 (6红+2蓝+1金 = 9张)
@@ -145,6 +206,7 @@ class GameManager:
         """继续游戏"""
         player_id = st.session_state.db_player["id"]
         save = st.session_state.db.get_continue_state(player_id)
+        reset_combat_flags()
         
         if not save:
             st.warning("没有可继续的存档")
@@ -158,12 +220,26 @@ class GameManager:
                 meaning=w['meaning'],
                 tier=w.get('tier', 0)
             ))
-        
+        state = save.get("state") or {}
+        gold = state.get("gold", INITIAL_GOLD)
+        max_hp = state.get("max_hp", 100)
+        hp = state.get("hp", max_hp)
+        armor = state.get("armor", 0)
+        inventory = state.get("inventory", [])
+        relics = state.get("relics", [])
+
         st.session_state.player = Player(
             id=player_id,
-            gold=INITIAL_GOLD,
-            deck=deck_cards
+            gold=gold,
+            hp=hp,
+            max_hp=max_hp,
+            armor=armor,
+            deck=deck_cards,
+            inventory=inventory,
+            relics=relics,
+            current_room=save.get("floor", 0),
         )
+        st.session_state.in_game_streak = {}
         
         # 恢复地图
         st.session_state.game_map = MapSystem(total_floors=TOTAL_FLOORS)
@@ -176,17 +252,27 @@ class GameManager:
         )
         
         # v6.0 恢复本局游戏词池 (用于战利品奖励)
-        from config import GAME_POOL_RED, GAME_POOL_BLUE, GAME_POOL_GOLD
-        game_pool = st.session_state.db.get_game_pool(player_id, GAME_POOL_RED, GAME_POOL_BLUE, GAME_POOL_GOLD)
-        deck_words = {c.word for c in deck_cards}
-        st.session_state.game_word_pool = [
-            WordCard(
-                word=w['word'], 
-                meaning=w['meaning'], 
-                tier=w.get('tier', 0), 
-                priority=w.get('priority', 'normal')
-            ) for w in game_pool if w['word'] not in deck_words
-        ]
+        if "game_word_pool" in state:
+            st.session_state.game_word_pool = [
+                WordCard(
+                    word=w['word'],
+                    meaning=w['meaning'],
+                    tier=w.get('tier', 0),
+                    priority=w.get('priority', 'normal'),
+                ) for w in (state.get("game_word_pool") or [])
+            ]
+        else:
+            from config import GAME_POOL_RED, GAME_POOL_BLUE, GAME_POOL_GOLD
+            game_pool = st.session_state.db.get_game_pool(player_id, GAME_POOL_RED, GAME_POOL_BLUE, GAME_POOL_GOLD)
+            deck_words = {c.word for c in deck_cards}
+            st.session_state.game_word_pool = [
+                WordCard(
+                    word=w['word'],
+                    meaning=w['meaning'],
+                    tier=w.get('tier', 0),
+                    priority=w.get('priority', 'normal')
+                ) for w in game_pool if w['word'] not in deck_words
+            ]
         
         st.session_state.phase = GamePhase.MAP_SELECT
         st.rerun()
@@ -218,7 +304,8 @@ class GameManager:
         st.session_state.db.save_run_state(
             st.session_state.player.id, 
             0, 
-            [c.to_dict() for c in selected_cards]
+            [c.to_dict() for c in selected_cards],
+            state=self._build_run_state(),
         )
         
         # 5. 进入地图
@@ -227,32 +314,33 @@ class GameManager:
     
     def _start_background_boss_generation(self, all_words: list):
         """在后台线程中生成 Boss 文章"""
-        def _generate():
+        word_list = [w['word'] for w in all_words if w.get('word')]
+        result_queue = st.session_state.boss_generation_queue
+
+        def _generate(words: list, out_q: queue.Queue):
             try:
                 ai = CyberMind()
-                word_list = [w['word'] for w in all_words if w.get('word')]
-                
-                article = ai.generate_article(word_list)
+                article = ai.generate_article(words)
                 if article and article.get('article_english'):
-                    quizzes = ai.generate_quiz(word_list, article['article_english'])
-                    st.session_state.boss_article_cache = {
+                    quizzes = ai.generate_quiz(words, article['article_english'])
+                    result = {
                         'article': article,
                         'quizzes': quizzes
                     }
                 else:
-                    st.session_state.boss_article_cache = {
-                        'article': MockGenerator.generate_article(word_list),
-                        'quizzes': MockGenerator.generate_quiz(word_list)
+                    result = {
+                        'article': MockGenerator.generate_article(words),
+                        'quizzes': MockGenerator.generate_quiz(words)
                     }
-                st.session_state.boss_generation_status = 'ready'
             except Exception:
-                st.session_state.boss_article_cache = {
-                    'article': MockGenerator.generate_article(word_list),
-                    'quizzes': MockGenerator.generate_quiz(word_list)
+                result = {
+                    'article': MockGenerator.generate_article(words),
+                    'quizzes': MockGenerator.generate_quiz(words)
                 }
-                st.session_state.boss_generation_status = 'ready'
-        
-        thread = threading.Thread(target=_generate, daemon=True)
+
+            out_q.put(result)
+
+        thread = threading.Thread(target=_generate, args=(word_list, result_queue), daemon=True)
         thread.start()
     
     def enter_node(self, node):
@@ -279,7 +367,8 @@ class GameManager:
         st.session_state.db.save_run_state(
             player.id,
             ms.floor,
-            [c.to_dict() for c in player.deck]
+            [c.to_dict() for c in player.deck],
+            state=self._build_run_state(),
         )
         
         if ms.floor >= ms.total_floors:
@@ -335,6 +424,8 @@ class GameManager:
 def render_game():
     """游戏主渲染入口"""
     gm = GameManager()
+    gm._consume_boss_queue()
+    _warn_missing_kimi_key()
     phase = st.session_state.phase
     
     # 主菜单和图书馆不显示 HUD
@@ -356,7 +447,7 @@ def render_game():
         
         if node_type in ["COMBAT", "ELITE"]:
             render_combat(
-                lambda: gm.resolve_node(trigger_draft=True), 
+                lambda: gm.resolve_node(trigger_draft=False), 
                 gm.check_player_death
             )
         elif node_type == "BOSS":
@@ -405,10 +496,13 @@ def render_game():
 # ==========================================
 # 🚀 启动
 # ==========================================
-st.set_page_config(page_title="单词尖塔 v5.4", page_icon="🏰", layout="wide")
+st.set_page_config(page_title="单词尖塔 v5.4", page_icon="🗿", layout="wide")
 
 st.markdown("""
 <style>
+    .stApp, .stApp * {
+        font-family: "Microsoft YaHei", "PingFang SC", "Noto Sans SC", "SimHei", "Segoe UI Emoji", "Apple Color Emoji", "Noto Color Emoji", sans-serif;
+    }
     .highlight-word { color: #ff6b6b; font-weight: bold; }
     .relic-item { padding: 4px 8px; margin: 2px 0; border-radius: 4px; background: rgba(255,255,255,0.1); }
     .card-red { border-left: 4px solid #e74c3c; }
@@ -416,5 +510,5 @@ st.markdown("""
     .card-gold { border-left: 4px solid #f39c12; }
 </style>
 """, unsafe_allow_html=True)
-
 render_game()
+

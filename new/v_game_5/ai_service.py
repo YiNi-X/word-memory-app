@@ -5,6 +5,7 @@ import json
 import re
 import sys
 import threading
+import logging
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
 
@@ -26,13 +27,26 @@ class CyberMind:
     """
     
     def __init__(self):
-        self.client = OpenAI(api_key=KIMI_API_KEY, base_url=BASE_URL)
+        api_key = ""
+        try:
+            api_key = st.secrets.get("KIMI_API_KEY", "")
+        except Exception:
+            api_key = ""
+        if not api_key:
+            api_key = KIMI_API_KEY
+
+        self.client = OpenAI(api_key=api_key, base_url=BASE_URL) if api_key else None
         self._last_error = None
     
     def _call(self, system: str, user: str, retries: int = 3) -> dict:
         """调用 Kimi API，自动处理 JSON 解析和错误重试"""
         self._last_error = None
-        
+
+        if not self.client:
+            if not st.session_state.get("_warned_missing_kimi", False):
+                st.warning("KIMI_API_KEY is missing; using Mock generator.")
+                st.session_state._warned_missing_kimi = True
+            return None
         for attempt in range(retries):
             try:
                 response = self.client.chat.completions.create(
@@ -374,8 +388,8 @@ class BossPreloader:
         if cls._future:
             try:
                 cls._future.result(timeout=timeout)
-            except:
-                pass
+            except Exception:
+                logging.exception("BossPreloader wait_result failed")
         return cls._result
     
     @classmethod

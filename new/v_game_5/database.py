@@ -4,6 +4,7 @@
 import sqlite3
 import json
 import random
+import logging
 import sys
 from pathlib import Path
 from datetime import datetime
@@ -14,15 +15,39 @@ _current_dir = Path(__file__).parent
 if str(_current_dir) not in sys.path:
     sys.path.insert(0, str(_current_dir))
 
-from config import DB_NAME, DEFAULT_REVIEW_WORDS
+from config import (
+    DB_NAME,
+    DEFAULT_REVIEW_WORDS,
+    RED_TO_BLUE_UPGRADE_THRESHOLD,
+    BLUE_TO_GOLD_UPGRADE_THRESHOLD,
+)
 
 
 class GameDB:
+    DEFAULT_DB_FILENAME = "vocab_spire_v5.db"
     """管理玩家金币、已掌握词汇(Deck)、爬塔历史"""
     
     def __init__(self, db_name=None):
-        self.db_name = db_name or DB_NAME
-        self._init_tables()
+        self.db_name = self._resolve_db_path(db_name or DB_NAME)
+        try:
+            self._init_tables()
+        except sqlite3.OperationalError:
+            fallback = self._resolve_db_path(self.DEFAULT_DB_FILENAME)
+            if self.db_name != fallback:
+                print(f"[GameDB] DB open failed at {self.db_name}; fallback to {fallback}")
+                self.db_name = fallback
+                self._init_tables()
+            else:
+                raise
+
+    @staticmethod
+    def _resolve_db_path(db_name: str) -> str:
+        """将相对路径解析到当前模块目录，并确保父目录存在"""
+        path = Path(db_name)
+        if not path.is_absolute():
+            path = (_current_dir / path).resolve()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        return str(path)
     
     @contextmanager
     def _get_conn(self):
@@ -79,6 +104,7 @@ class GameDB:
                 victory BOOLEAN,
                 words_learned TEXT,
                 deck_snapshot TEXT,
+                state_snapshot TEXT,
                 in_progress BOOLEAN DEFAULT FALSE,
                 ended_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY(player_id) REFERENCES players(id)
@@ -114,7 +140,7 @@ class GameDB:
                 try:
                     cursor.execute(f"ALTER TABLE deck ADD COLUMN {col_name} {col_def}")
                 except Exception:
-                    pass
+                    logging.exception("Failed to migrate deck column: %s", col_name)
     
     def _migrate_run_history_table(self, cursor):
         """迁移旧版 run_history 表"""
@@ -124,6 +150,7 @@ class GameDB:
         migrations = [
             ("in_progress", "BOOLEAN DEFAULT FALSE"),
             ("deck_snapshot", "TEXT"),
+            ("state_snapshot", "TEXT"),
         ]
         
         for col_name, col_def in migrations:
@@ -131,7 +158,7 @@ class GameDB:
                 try:
                     cursor.execute(f"ALTER TABLE run_history ADD COLUMN {col_name} {col_def}")
                 except Exception:
-                    pass
+                    logging.exception("Failed to migrate run_history column: %s", col_name)
     
     def _init_distractor_pool(self, conn):
         """初始化干扰词库"""
@@ -411,8 +438,8 @@ class GameDB:
         更新单词进度
         
         升级判定:
-        - Red -> Blue: consecutive_correct >= 3
-        - Blue -> Gold: consecutive_correct >= 5
+        - Red -> Blue: consecutive_correct >= RED_TO_BLUE_UPGRADE_THRESHOLD
+        - Blue -> Gold: consecutive_correct >= BLUE_TO_GOLD_UPGRADE_THRESHOLD
         """
         with self._get_conn() as conn:
             c = conn.cursor()
@@ -432,10 +459,10 @@ class GameDB:
                 new_tier = current_tier
                 
                 # 升级判定
-                if current_tier <= 1 and new_streak >= 2:
+                if current_tier <= 1 and new_streak >= RED_TO_BLUE_UPGRADE_THRESHOLD:
                     new_tier = 2  # Red -> Blue
                     new_streak = 0  # 重置连击
-                elif current_tier in [2, 3] and new_streak >= 3:
+                elif current_tier in [2, 3] and new_streak >= BLUE_TO_GOLD_UPGRADE_THRESHOLD:
                     new_tier = 4  # Blue -> Gold
                     new_streak = 0
                 
@@ -462,7 +489,7 @@ class GameDB:
     # 存档系统
     # ==========================================
     
-    def save_run_state(self, player_id: int, floor: int, deck: list, in_progress: bool = True):
+    def save_run_state(self, player_id: int, floor: int, deck: list, state: dict = None, in_progress: bool = True):
         """保存游戏进度"""
         with self._get_conn() as conn:
             # 先清除旧的进行中存档
@@ -470,9 +497,15 @@ class GameDB:
                         (player_id,))
             
             conn.execute("""INSERT INTO run_history 
-                (player_id, floor_reached, victory, deck_snapshot, in_progress)
-                VALUES (?, ?, FALSE, ?, ?)""",
-                (player_id, floor, json.dumps(deck, ensure_ascii=False), in_progress))
+                (player_id, floor_reached, victory, deck_snapshot, state_snapshot, in_progress)
+                VALUES (?, ?, FALSE, ?, ?, ?)""",
+                (
+                    player_id,
+                    floor,
+                    json.dumps(deck, ensure_ascii=False),
+                    json.dumps(state, ensure_ascii=False) if state is not None else None,
+                    in_progress,
+                ))
     
     def get_continue_state(self, player_id: int) -> Optional[dict]:
         """获取可继续的存档"""
@@ -484,9 +517,11 @@ class GameDB:
                      (player_id,))
             row = c.fetchone()
             if row:
+                state_raw = row['state_snapshot'] if 'state_snapshot' in row.keys() else None
                 return {
                     "floor": row['floor_reached'],
-                    "deck": json.loads(row['deck_snapshot']) if row['deck_snapshot'] else []
+                    "deck": json.loads(row['deck_snapshot']) if row['deck_snapshot'] else [],
+                    "state": json.loads(state_raw) if state_raw else None,
                 }
             return None
     

@@ -1,9 +1,10 @@
 # ==========================================
 # ⚙️ 配置常量 - Word=Card 战斗系统
 # ==========================================
+import os
 
 # Kimi API 配置
-KIMI_API_KEY = "sk-tqxUlkDlyX2N2Ka2fJzjv0aDKr5B8hJGVDhFD9N56vGBjlZf"
+KIMI_API_KEY = os.getenv("KIMI_API_KEY", "")
 BASE_URL = "https://api.moonshot.cn/v1"
 MODEL_ID = "kimi-k2.5"
 
@@ -21,47 +22,52 @@ MANDATORY_ELITE_COMBATS = 6   # 必须遇到的精英数量
 # ==========================================
 # 🎴 卡牌战斗配置
 # ==========================================
-HAND_SIZE = 6           # 弹仓容量
+HAND_SIZE = 6           # ????
+MIN_HAND_AFTER_TURN = 3 # ???????????
 MIN_ATTACK_CARDS = 3    # 最少红卡数量
-BATTLE_HAND_SIZE = 5    # 每场战斗抽牌数量
+BATTLE_HAND_SIZE = 6    # ????????
 
 # 本局单词池配置
-GAME_POOL_RED = 20      # 本局红卡总数
-GAME_POOL_BLUE = 6     # 本局蓝卡总数
-GAME_POOL_GOLD = 3      # 本局金卡总数
+GAME_POOL_RED = 16      # ??????
+GAME_POOL_BLUE = 10     # ??????
+GAME_POOL_GOLD = 6      # ??????
 
 # 初始卡组配置
 INITIAL_DECK_RED = 6    # 开局红卡数
 INITIAL_DECK_BLUE = 2   # 开局蓝卡数
 INITIAL_DECK_GOLD = 1   # 开局金卡数
-DECK_LIMIT = 9          # 卡组上限
-DECK_MAX_RED = 8        # 红卡上限
-DECK_MAX_BLUE = 5       # 蓝卡上限
-DECK_MAX_GOLD = 1       # 金卡上限
+INITIAL_DECK_SIZE = 9   # 初始抓牌数量 (Tower Prep)
 
 # 局内升级阈值
-IN_GAME_UPGRADE_THRESHOLD = 2  # 答对几次升级
+IN_GAME_UPGRADE_THRESHOLD = 3  # ??????
+RED_TO_BLUE_UPGRADE_THRESHOLD = 3
+BLUE_TO_GOLD_UPGRADE_THRESHOLD = 2
 
 # 卡牌效果
-ATTACK_DAMAGE = 25      # 🟥 红卡伤害
-ATTACK_BACKFIRE = 10    # 答错反噬伤害
-DEFENSE_BLOCK = 10      # 🟦 蓝卡护甲
-DEFENSE_DAMAGE = 15     # 🟦 蓝卡伤害（新增）
-DEFENSE_HEAL = 5        # 蓝卡回血（升级后效果）
-BLACK_DAMAGE = 50       # 🖤 黑卡伤害
-BLACK_BACKFIRE = 75     # 🖤 黑卡答错伤害 (从50改为75)
-UTILITY_DRAW = 2        # 🟨 金卡抽牌
-UTILITY_DAMAGE_MULT = 2 # 金卡伤害加成
+ATTACK_DAMAGE = 15      # ????
+ATTACK_BACKFIRE = 5     # ????
+DEFENSE_BLOCK = 8        # defense block
+DEFENSE_DAMAGE = 8      # ????
+DEFENSE_HEAL = 5        # ????(?????)
+BLACK_DAMAGE = 20       # ????
+BLACK_BACKFIRE = 15     # ??????
+UTILITY_DRAW = 2        # ????
+UTILITY_DAMAGE_MULT = 2 # ??????
+GOLD_CARD_USES = 1      # gold uses per combat
 
 # 敌人配置
-ENEMY_HP_BASE = 125     # 基础血量（小怪）
-ENEMY_HP_ELITE = 150    # 精英血量
-ENEMY_HP_BOSS = 200     # Boss 血量
-ENEMY_ATTACK = 10       # 敌人攻击
-ENEMY_ACTION_TIMER = 2  # 几回合攻击一次（从3改为2）
+ENEMY_HP_BASE = 50      # enemy base HP
+ENEMY_HP_ELITE = 75     # elite base HP
+ENEMY_HP_GROWTH = 2     # enemy HP growth per floor
+ENEMY_HP_BOSS = 150     # Boss ??
+ENEMY_ATTACK = 8        # ????
+ENEMY_ACTION_TIMER = 3  # ???????(???)
+
+# UI 停留时间额外延迟
+UI_PAUSE_EXTRA = 1.0
 
 # 商店购卡价格
-SHOP_RED_CARD_BASE_PRICE = 25   # 红卡基础价格（递增 25/50/75...）
+SHOP_RED_CARD_BASE_PRICE = 20   # 红卡基础价格（递增 20/40/60...）
 SHOP_BLUE_CARD_BASE_PRICE = 50  # 蓝卡基础价格（递增 50/100/150...）
 SHOP_GOLD_CARD_PRICE = 100      # 金卡固定价格（每局仅一次）
 

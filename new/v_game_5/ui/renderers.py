@@ -1,4 +1,4 @@
-# ==========================================
+﻿# ==========================================
 # 🖥️ 页面渲染器 - v5.4
 # ==========================================
 import sys
@@ -17,13 +17,19 @@ from models import (
     GamePhase, NodeType, Player, BossState, 
     CardType, WordCard, Enemy, CombatPhase, CardCombatState, CARD_STATS
 )
-from config import HAND_SIZE, ENEMY_HP_BASE, ENEMY_ATTACK, ENEMY_ACTION_TIMER
+from state_utils import reset_combat_flags
+from config import HAND_SIZE, ENEMY_HP_BASE, ENEMY_ATTACK, ENEMY_ACTION_TIMER, UI_PAUSE_EXTRA
 from registries import EventRegistry, ShopRegistry
+from systems.trigger_bus import TriggerBus, TriggerContext
 from ai_service import CyberMind, MockGenerator, BossPreloader
 from ui.components import (
     play_audio, render_word_card, render_card_slot, render_enemy,
     render_hand, render_learning_popup, render_quiz_test
 )
+
+
+def _pause(seconds: float):
+    time.sleep(seconds + UI_PAUSE_EXTRA)
 
 
 # ==========================================
@@ -34,7 +40,7 @@ def render_main_menu(start_callback, continue_callback, library_callback):
     st.markdown("""
     <div style="text-align: center; padding: 40px 0;">
         <h1>🏰 单词尖塔</h1>
-        <p style="font-size: 1.2em; color: #888;">Spire of Vocab v5.4</p>
+        <p style="font-size: 1.2em; color: #888;">单词尖塔 v5.4</p>
     </div>
     """, unsafe_allow_html=True)
     
@@ -49,7 +55,7 @@ def render_main_menu(start_callback, continue_callback, library_callback):
         # 检查是否有存档
         save = st.session_state.db.get_continue_state(db_player.get('id'))
         if save:
-            st.metric("📂 存档", f"F{save.get('floor', 0)}")
+            st.metric("📂 存档", f"第{save.get('floor', 0)}层")
         else:
             st.metric("📂 存档", "-")
     
@@ -69,7 +75,7 @@ def render_main_menu(start_callback, continue_callback, library_callback):
             st.markdown("### 📂 继续游戏")
             save = st.session_state.db.get_continue_state(db_player.get('id'))
             if save:
-                st.caption(f"进度: Floor {save.get('floor', 0)}")
+                st.caption(f"进度: 第{save.get('floor', 0)}层")
                 if st.button("继续", key="btn_continue", use_container_width=True):
                     continue_callback()
             else:
@@ -88,8 +94,8 @@ def render_main_menu(start_callback, continue_callback, library_callback):
 # 单词图书馆
 # ==========================================
 def render_word_library(back_callback):
-    """单词图书馆 (Grimoire)"""
-    st.markdown("## 📚 单词图书馆 (Grimoire)")
+    """单词图书馆"""
+    st.markdown("## 📚 单词图书馆")
     
     if st.button("← 返回主菜单"):
         back_callback()
@@ -214,7 +220,7 @@ def render_drafting(complete_callback: Callable):
     candidates = st.session_state.draft_candidates
     
     if not candidates:
-        st.warning("词库已空！请在 Word Library 添加更多单词")
+        st.warning("词库已空！请在单词图书馆添加更多单词")
         if st.button("跳过", use_container_width=True):
             complete_callback(None)
         return
@@ -276,7 +282,7 @@ def render_map_select(enter_node_callback: Callable):
         with cols[i]:
             with st.container(border=True):
                 st.markdown(f"### {node.type.value}")
-                st.caption(f"Floor {node.level}")
+                st.caption(f"第{node.level}层")
                 
                 if st.button(f"前往", key=f"node_sel_{i}", use_container_width=True):
                     enter_node_callback(node)
@@ -286,6 +292,7 @@ def render_combat(resolve_node_callback: Callable, check_death_callback: Callabl
     """卡牌战斗"""
     player = st.session_state.player
     if 'card_combat' not in st.session_state:
+        reset_combat_flags()
         
         # 检测是否精英战
         node = st.session_state.game_map.current_node
@@ -332,6 +339,8 @@ def render_combat(resolve_node_callback: Callable, check_death_callback: Callabl
     # v6.0 直接进入战斗，不再有 Loading 阶段
     if cs.phase == CombatPhase.LOADING:
         cs.start_battle()
+        TriggerBus.trigger("on_combat_start", TriggerContext(player=player, enemy=cs.enemy, combat_state=cs))
+        cs.ensure_black_in_hand()
         # 初始填充手牌
         while len(cs.hand) < cs.hand_size:
             cs.draw_card()
@@ -339,8 +348,6 @@ def render_combat(resolve_node_callback: Callable, check_death_callback: Callabl
         return
 
     if cs.phase == CombatPhase.BATTLE:
-        # 显示实时护甲
-        st.sidebar.metric("🛡️ 当前护甲", player.armor)
         _render_battle_phase(cs, resolve_node_callback, check_death_callback)
     elif cs.phase == CombatPhase.VICTORY:
         st.balloons()
@@ -391,6 +398,9 @@ def render_combat(resolve_node_callback: Callable, check_death_callback: Callabl
                 if st.button("✅ 确认选择", type="primary"):
                     for card in selected:
                         st.session_state.player.add_card_to_deck(card)
+                    pool = st.session_state.get('game_word_pool', [])
+                    selected_words = {c.word for c in selected}
+                    st.session_state.game_word_pool = [c for c in pool if c.word not in selected_words]
                     st.toast(f"🎴 获得 {len(selected)} 张卡牌！", icon="✨")
                     # 清理奖励状态
                     del st.session_state.reward_cards
@@ -400,7 +410,7 @@ def render_combat(resolve_node_callback: Callable, check_death_callback: Callabl
                     _complete_combat_victory(cs, resolve_node_callback)
         else:
             # 无可用奖励卡牌
-            if st.button("🎁 获取战利品 (+30G)", type="primary"):
+            if st.button("🎁 获取战利品（+30金币）", type="primary"):
                 if 'combat_recorded' in st.session_state:
                     del st.session_state.combat_recorded
                 _complete_combat_victory(cs, resolve_node_callback)
@@ -409,8 +419,12 @@ def render_combat(resolve_node_callback: Callable, check_death_callback: Callabl
 def _complete_combat_victory(cs: CardCombatState, resolve_node_callback: Callable):
     """完成战斗胜利流程"""
     gold_reward = 50 if cs.enemy.is_elite else 30
-    st.session_state.player.add_gold(gold_reward)
-    st.session_state.player.advance_room()
+    player = st.session_state.player
+    ctx = TriggerContext(player=player, enemy=cs.enemy, combat_state=cs, data={"gold_reward": gold_reward})
+    TriggerBus.trigger("on_combat_end", ctx)
+    gold_reward = ctx.data.get("gold_reward", gold_reward)
+    player.add_gold(gold_reward)
+    player.advance_room()
     
     # 如果接近 Boss 层，启动后台预加载
     game_map = st.session_state.get('game_map')
@@ -434,88 +448,83 @@ def _complete_combat_victory(cs: CardCombatState, resolve_node_callback: Callabl
     resolve_node_callback()
 
 
+def _take_cards_from_pool(count: int, prefer_red_only: bool = False) -> list:
+    pool = st.session_state.get('game_word_pool') or []
+    deck_words = {c.word for c in st.session_state.player.deck}
+    pool = [c for c in pool if c.word not in deck_words]
+    if count <= 0 or not pool:
+        return []
+
+    red_cards = [c for c in pool if c.card_type == CardType.RED_BERSERK]
+    other_cards = [c for c in pool if c.card_type != CardType.RED_BERSERK]
+    picked = []
+
+    for _ in range(count):
+        source = red_cards if red_cards else ([] if prefer_red_only else other_cards)
+        if not source:
+            break
+        card = random.choice(source)
+        picked.append(card)
+        if card in pool:
+            pool.remove(card)
+        if card in red_cards:
+            red_cards.remove(card)
+        if card in other_cards:
+            other_cards.remove(card)
+
+    st.session_state.game_word_pool = pool
+    return picked
+
+
+def _grant_red_card_from_pool(reason: str = "") -> bool:
+    cards = _take_cards_from_pool(1, prefer_red_only=True)
+    if not cards:
+        return False
+    card = cards[0]
+    st.session_state.player.add_card_to_deck(card)
+    st.toast(f"获得红卡（{reason}）") if reason else st.toast("获得红卡")
+    return True
+
+
+def _count_upgrade_for_red_reward():
+    counter = st.session_state.get("upgrade_red_counter", 0) + 1
+    if counter >= 2:
+        _grant_red_card_from_pool("升级累计")
+        counter = max(0, counter - 2)
+    st.session_state.upgrade_red_counter = counter
+
+
 def _render_preparation():
-    """战斗准备面板：9卡位限制 + 颜色配比"""
-    st.header("⚔️ 战斗准备")
+    """战前准备：查看卡组并确认出发"""
+    st.header("🧭 战前准备")
     player = st.session_state.player
-    limit = player.deck_limit
-    
-    from config import DECK_MAX_RED, DECK_MAX_BLUE, DECK_MAX_GOLD
-    
-    st.markdown(f"你的卡库庞大，请挑选 **{limit}** 张卡携带进入本次战斗。")
-    st.info(f"配比限制: 🟥≤{DECK_MAX_RED} | 🟦≤{DECK_MAX_BLUE} | 🟨≤{DECK_MAX_GOLD}")
-    
-    if 'prep_indices' not in st.session_state:
-        # 默认选中前 limit 张
-        st.session_state.prep_indices = set(range(min(len(player.deck), limit)))
-        # 简单修正：如果默认选中不满足颜色限制，清空让用户自己选
-        # 这里暂时保留默认，由用户调整
-    
-    selected = st.session_state.prep_indices
-    
-    # 统计各颜色选了多少
-    current_red = 0
-    current_blue = 0
-    current_gold = 0
-    
-    for idx in selected:
-        if idx < len(player.deck):
-            ctype = player.deck[idx].card_type
-            if ctype == CardType.RED_BERSERK or ctype == CardType.BLACK_CURSE:
-                current_red += 1
-            elif ctype == CardType.BLUE_HYBRID:
-                current_blue += 1
-            elif ctype == CardType.GOLD_SUPPORT:
-                current_gold += 1
-    
-    # 顶部状态栏
-    st.markdown(f"**已选择: {len(selected)} / {limit}**")
+
+    st.markdown("### 当前卡组")
+    st.caption(f"当前卡组共 {len(player.deck)} 张卡牌")
+
+    current_red = sum(1 for c in player.deck if c.card_type in [CardType.RED_BERSERK, CardType.BLACK_CURSE])
+    current_blue = sum(1 for c in player.deck if c.card_type == CardType.BLUE_HYBRID)
+    current_gold = sum(1 for c in player.deck if c.card_type == CardType.GOLD_SUPPORT)
+
+    st.markdown("**卡组统计**")
     m1, m2, m3 = st.columns(3)
-    m1.metric("🟥 狂暴 (上限8)", f"{current_red}", delta=DECK_MAX_RED-current_red, delta_color="normal")
-    m2.metric("🟦 混合 (上限5)", f"{current_blue}", delta=DECK_MAX_BLUE-current_blue, delta_color="normal")
-    m3.metric("🟨 辅助 (上限1)", f"{current_gold}", delta=DECK_MAX_GOLD-current_gold, delta_color="normal")
-    
-    # 渲染卡库
-    deck_cols = st.columns(3)
-    for i, card in enumerate(player.deck):
-        with deck_cols[i % 3]:
-            is_sel = i in selected
-            
-            # 判断是否可选
-            can_select = True
-            if not is_sel:
-                if len(selected) >= limit: 
-                    can_select = False
-                else:
-                    ctype = card.card_type
-                    if (ctype == CardType.RED_BERSERK or ctype == CardType.BLACK_CURSE) and current_red >= DECK_MAX_RED:
-                        can_select = False
-                    elif ctype == CardType.BLUE_HYBRID and current_blue >= DECK_MAX_BLUE:
-                        can_select = False
-                    elif ctype == CardType.GOLD_SUPPORT and current_gold >= DECK_MAX_GOLD:
-                        can_select = False
-            
-            btn_type = "primary" if is_sel else "secondary"
-            label = f"{card.icon} {card.word}"
-            
-            if st.button(label, key=f"prep_{i}", type=btn_type, disabled=(not is_sel and not can_select), use_container_width=True):
-                if is_sel:
-                    selected.remove(i)
-                else:
-                    selected.add(i)
-                st.rerun()
+    m1.metric("红卡数", f"{current_red}")
+    m2.metric("蓝卡数", f"{current_blue}")
+    m3.metric("金卡数", f"{current_gold}")
 
-    # 提交按钮
-    is_valid = (len(selected) == limit and 
-                current_red <= DECK_MAX_RED and 
-                current_blue <= DECK_MAX_BLUE and 
-                current_gold <= DECK_MAX_GOLD)
-                
-    if st.button("🔥 确认携带进入战斗", type="primary", disabled=not is_valid, use_container_width=True):
-        st.session_state.preparation_selected = [player.deck[i] for i in selected]
-        del st.session_state.prep_indices
+    with st.expander(f"查看卡组详情（{len(player.deck)}）", expanded=True):
+        deck_cols = st.columns(3)
+        for i, card in enumerate(player.deck):
+            with deck_cols[i % 3]:
+                with st.container(border=True):
+                    st.markdown(f"**{card.icon} {card.word}**")
+                    st.caption(card.meaning)
+
+    if st.button("确认出发", type="primary", use_container_width=True):
+        st.session_state.preparation_selected = player.deck
+        if 'prep_indices' in st.session_state:
+            del st.session_state.prep_indices
         st.rerun()
-
 
 def _render_loading_phase(cs: CardCombatState):
     """装填阶段"""
@@ -605,7 +614,7 @@ def _render_battle_phase(cs: CardCombatState, resolve_node_callback, check_death
         # 敌人攻击（眩晕回合敌人不攻击，但伤害递增）
         intent = cs.enemy.tick()
         cs.turns += 1
-        time.sleep(1)
+        _pause(1)
         st.rerun()
         return
     
@@ -619,8 +628,8 @@ def _render_battle_phase(cs: CardCombatState, resolve_node_callback, check_death
     with col_left:
         render_enemy(cs.enemy)
         st.markdown(f"**回合:** {cs.turns}")
-        if cs.next_card_x2:
-            st.success("⚡ 下张红卡伤害 x2!")
+        if cs.next_card_multiplier and cs.next_card_multiplier > 1:
+            st.success(f"⚡ 下一张数值 x{cs.next_card_multiplier}")
     
     with col_right:
         if cs.current_card:
@@ -643,7 +652,18 @@ def _render_battle_phase(cs: CardCombatState, resolve_node_callback, check_death
         clicked = render_hand(cs.hand, on_play=True)
         if clicked is not None:
             card = cs.hand[clicked]
-            cs.play_card(card)
+            removed = cs.play_card(card)
+            if removed:
+                _grant_red_card_from_pool("移除")
+            if len(cs.hand) == 0:
+                if card.card_type == CardType.RED_BERSERK and "START_BURNING_BLOOD" in getattr(player, "relics", []):
+                    cs.draw_with_preference([CardType.RED_BERSERK], 2)
+                elif card.card_type == CardType.BLUE_HYBRID and "PAIN_ARMOR" in getattr(player, "relics", []):
+                    drawn = []
+                    drawn += cs.draw_with_preference([CardType.RED_BERSERK], 1)
+                    drawn += cs.draw_with_preference([CardType.BLUE_HYBRID], 1)
+                    if len(drawn) < 2:
+                        cs.draw_with_preference([CardType.RED_BERSERK, CardType.BLUE_HYBRID], 2 - len(drawn))
             all_words = [c.word for c in cs.word_pool]
             options = random.sample([w for w in all_words if w != card.word], min(3, len(all_words) - 1))
             options.append(card.word)
@@ -658,6 +678,16 @@ def _render_card_test(cs: CardCombatState, player, check_death_callback):
     """出牌测试"""
     card = cs.current_card
     options = cs.current_options
+
+    # 使用提示道具：移除错误选项
+    if st.session_state.get('_item_hint', 0) and options:
+        wrong_opts = [o for o in options if o != card.word]
+        if wrong_opts:
+            remove_count = 2 if len(wrong_opts) >= 2 else 1
+            to_remove = random.sample(wrong_opts, remove_count)
+            options = [o for o in options if o not in to_remove]
+            cs.current_options = options
+        st.session_state._item_hint = max(0, st.session_state.get("_item_hint", 0) - 1)
     
     st.markdown(f"### 🎴 {card.card_type.icon} {card.card_type.name_cn}卡")
     
@@ -671,38 +701,60 @@ def _render_card_test(cs: CardCombatState, player, check_death_callback):
         current_room = player.current_room
         
         # 更新进度
+        result = None
         if db and player_id:
             result = db.update_word_progress(player_id, card.word, correct, current_room)
             if result and result.get('upgraded'):
                 st.success(f"⬆️ {card.word} 升级!")
+                new_tier = result.get("new_tier")
+                if new_tier is not None:
+                    card.tier = new_tier
+                    if not card.is_blackened:
+                        card.temp_level = None
+                    for c in player.deck:
+                        if c.word == card.word:
+                            c.tier = new_tier
+                            if not c.is_blackened:
+                                c.temp_level = None
         db = st.session_state.get('db')
         player_id = st.session_state.db_player.get('id')
         
         if correct:
             st.success(f"✅ 正确！")
             _apply_card_effect(card, cs, player, correct=True)
+            TriggerBus.trigger("on_correct_answer", TriggerContext(player=player, enemy=cs.enemy, card=card, combat_state=cs))
             
             # v6.0 正确清空错误计数
             card.wrong_streak = 0
+
+            if result and result.get('upgraded'):
+                _count_upgrade_for_red_reward()
             
             # 局内熟练度追踪
-            from config import IN_GAME_UPGRADE_THRESHOLD
+            from config import RED_TO_BLUE_UPGRADE_THRESHOLD, BLUE_TO_GOLD_UPGRADE_THRESHOLD
             streak = st.session_state.in_game_streak
             word = card.word
             streak[word] = streak.get(word, 0) + 1
             
             # 达到阈值则升级卡牌 (temp_level)
-            if streak[word] >= IN_GAME_UPGRADE_THRESHOLD:
-                if card.card_type == CardType.RED_BERSERK:
+            if card.card_type == CardType.RED_BERSERK:
+                if streak[word] >= RED_TO_BLUE_UPGRADE_THRESHOLD:
                     card.temp_level = "blue"
-                    st.toast(f"⬆️ {word} 升级为蓝卡！", icon="🟦")
-                elif card.card_type == CardType.BLUE_HYBRID:
+                    st.toast(f"升级为蓝卡：{word}", icon="🟦")
+                    _count_upgrade_for_red_reward()
+                    streak[word] = 0  # 重置计数
+            elif card.card_type == CardType.BLUE_HYBRID:
+                if streak[word] >= BLUE_TO_GOLD_UPGRADE_THRESHOLD:
                     card.temp_level = "gold"
-                    st.toast(f"⬆️ {word} 升级为金卡！", icon="🟨")
-                streak[word] = 0  # 重置计数
+                    st.toast(f"升级为金卡：{word}", icon="🟨")
+                    _count_upgrade_for_red_reward()
+                    streak[word] = 0  # 重置计数
         else:
             st.error(f"❌ 错误！正确答案: {card.word}")
-            _apply_card_effect(card, cs, player, correct=False)
+            ctx = TriggerContext(player=player, enemy=cs.enemy, card=card, combat_state=cs)
+            TriggerBus.trigger("on_wrong_answer", ctx)
+            if not ctx.data.get('negate_wrong_penalty'):
+                _apply_card_effect(card, cs, player, correct=False)
             
             # ==========================================
             # v6.0 精简降级路径：金(1) -> 蓝(2) -> 红(3) -> 黑
@@ -719,7 +771,7 @@ def _render_card_test(cs: CardCombatState, player, check_death_callback):
                     card.temp_level = "red"
                     st.warning("⬇️ 蓝卡遗忘！降级为红卡")
                     card.wrong_streak = 0
-                elif ctype == CardType.RED_BERSERK and card.wrong_streak >= 3:
+                elif ctype == CardType.RED_BERSERK and card.wrong_streak >= 2:
                     card.is_blackened = True
                     card.temp_level = "black"
                     st.error("💀 红卡黑化！变为诅咒卡")
@@ -737,11 +789,30 @@ def _render_card_test(cs: CardCombatState, player, check_death_callback):
             if check_death_callback():
                 return
         
+        if cs.extra_actions > 0:
+            cs.extra_actions -= 1
+            cs.current_card = None
+            cs.current_options = None
+            st.rerun()
+            return
+
         intent = cs.enemy.tick()
         if intent == "attack":
             damage = cs.enemy.attack
-            player.change_hp(-damage)
-            st.warning(f"👹 敌人攻击！造成 {damage} 伤害")
+            if st.session_state.get('_item_shield', False):
+                st.session_state._item_shield = False
+                damage = 0
+                st.toast("🛡️ 护盾抵消了本次攻击", icon="🛡️")
+            else:
+                reduce = st.session_state.get('_item_damage_reduce', 0)
+                if reduce:
+                    damage = max(0, damage - reduce)
+                    st.session_state._item_damage_reduce = 0
+            if damage > 0:
+                player.change_hp(-damage)
+                st.warning(f"👹 敌人攻击！造成 {damage} 伤害")
+            else:
+                st.toast("🛡️ 本次伤害被抵消", icon="🛡️")
             if check_death_callback():
                 return
         
@@ -751,7 +822,7 @@ def _render_card_test(cs: CardCombatState, player, check_death_callback):
         # v6.0 护甲每局重置，不再自动清零（玩家需要手动获得护甲）
         # 这里的 player.reset_block() 应该被移除，因为 Player 类现在有 armor
         
-        time.sleep(1)
+        _pause(1)
         st.rerun()
 
 
@@ -778,7 +849,7 @@ def _apply_card_effect(card: WordCard, cs: CardCombatState, player, correct: boo
 # ==========================================
 
 def render_boss(resolve_node_callback: Callable, check_death_callback: Callable):
-    """Boss 战"""
+    """首领战"""
     if 'boss_state' not in st.session_state:
         player = st.session_state.player
         boss_hp = max(100, len(player.deck) * 15)
@@ -786,8 +857,8 @@ def render_boss(resolve_node_callback: Callable, check_death_callback: Callable)
     
     bs = st.session_state.boss_state
     
-    st.markdown(f"## 👹 The Syntax Colossus")
-    st.progress(max(0, bs.boss_hp / bs.boss_max_hp), f"HP: {bs.boss_hp}/{bs.boss_max_hp}")
+    st.markdown("## 👹 语法巨像")
+    st.progress(max(0, bs.boss_hp / bs.boss_max_hp), f"生命: {bs.boss_hp}/{bs.boss_max_hp}")
     
     if bs.phase == 'loading':
         # 优先使用预加载的结果
@@ -807,17 +878,17 @@ def render_boss(resolve_node_callback: Callable, check_death_callback: Callable)
             st.rerun()
         elif st.session_state.get('boss_generation_status') == 'generating':
             # 后台线程仍在生成中
-            st.info("🔄 Boss 故事正在创作中，请稍候...")
+            st.info("🔄 首领故事正在创作中，请稍候...")
             st.caption("AI 正在为你编写独一无二的冒险故事...")
-            time.sleep(2)
+            _pause(2)
             st.rerun()
         elif BossPreloader.is_loading():
-            st.info("🔄 Boss 正在觉醒...")
-            time.sleep(1)
+            st.info("🔄 首领正在觉醒...")
+            _pause(1)
             st.rerun()
         else:
             # 没有预加载，使用当前卡组生成 (Mock)
-            with st.spinner("Boss 觉醒中..."):
+            with st.spinner("首领觉醒中..."):
                 player = st.session_state.player
                 words = [{"word": c.word, "meaning": c.meaning} for c in player.deck] if player.deck else []
                 bs.article = MockGenerator.generate_article(words)
@@ -827,9 +898,9 @@ def render_boss(resolve_node_callback: Callable, check_death_callback: Callable)
     
     elif bs.phase == 'article':
         if bs.article:
-            with st.expander("📜 Boss 本体", expanded=True):
+            with st.expander("📜 首领本体", expanded=True):
                 # v6.0 移除译文，仅展示英文文本
-                st.markdown("**English Context**")
+                st.markdown("**英文原文**")
                 st.markdown(bs.article.get('article_english', ''), unsafe_allow_html=True)
         
         if st.button("⚔️ 准备战斗", type="primary"):
@@ -852,9 +923,9 @@ def render_boss(resolve_node_callback: Callable, check_death_callback: Callable)
         # 渲染 Boss 状态
         col_hp, col_armor = st.columns(2)
         with col_hp:
-            st.progress(max(0, bs.boss_hp / bs.boss_max_hp), f"❤️ HP: {bs.boss_hp}/{bs.boss_max_hp}")
+            st.progress(max(0, bs.boss_hp / bs.boss_max_hp), f"❤️ 生命: {bs.boss_hp}/{bs.boss_max_hp}")
         with col_armor:
-            st.metric("🛡️ Boss Armor", bs.armor)
+            st.metric("🛡️ 首领护甲", bs.armor)
 
         if not is_frenzy:
             q = quizzes[bs.quiz_idx]
@@ -868,7 +939,7 @@ def render_boss(resolve_node_callback: Callable, check_death_callback: Callable)
                         # 检查斩杀保护：若题目未出完且 Boss 即将死亡，赋予 50 护甲
                         if bs.boss_hp <= damage and bs.quiz_idx < len(quizzes) - 1:
                             bs.armor += 50
-                            st.warning("🛡️ Boss 感到威胁，生成了临时护甲！")
+                            st.warning("🛡️ 首领感到威胁，生成了临时护甲！")
                         
                         # 扣除护甲或 HP
                         if bs.armor > 0:
@@ -885,7 +956,7 @@ def render_boss(resolve_node_callback: Callable, check_death_callback: Callable)
                         if bs.boss_hp < 100 and not bs.triggered_100hp_shield:
                             bs.armor += 100
                             bs.triggered_100hp_shield = True
-                            st.error("⚠️ Boss 进入二阶段，护甲激增！")
+                            st.error("⚠️ 首领进入二阶段，护甲激增！")
                     else:
                         st.session_state.player.change_hp(-25) # v6.0 Wrong Penalty
                         st.error(f"❌ 正确答案: {q['answer']}")
@@ -894,26 +965,26 @@ def render_boss(resolve_node_callback: Callable, check_death_callback: Callable)
                     
                     bs.quiz_idx += 1
                     bs.turn += 1
-                    time.sleep(1)
+                    _pause(1)
                     st.rerun()
         else:
             # 狂暴期：题目耗尽
-            st.error("🔥 Boss 进入狂暴状态！题目已耗尽，护甲清零，每回合造成递增伤害！")
+            st.error("🔥 首领进入狂暴状态！题目已耗尽，护甲清零，每回合造成递增伤害！")
             bs.armor = 0
             
             # 狂暴伤害计算：20, 30, 40... (每回合增加 10)
             frenzy_turn = bs.turn - len(quizzes)
             current_damage = 20 + (frenzy_turn * 10)
             
-            st.markdown(f"### 👹 Boss 蓄势待发... (当前威胁: {current_damage})")
-            st.progress(max(0, bs.boss_hp / bs.boss_max_hp), f"HP: {bs.boss_hp}/{bs.boss_max_hp}")
+            st.markdown(f"### 👹 首领蓄势待发... (当前威胁: {current_damage})")
+            st.progress(max(0, bs.boss_hp / bs.boss_max_hp), f"生命: {bs.boss_hp}/{bs.boss_max_hp}")
 
-            if st.button("💪 用意志抵挡并反击 (10 Dmg)", key="boss_frenzy_attack"):
+            if st.button("💪 用意志抵挡并反击（10伤害）", key="boss_frenzy_attack"):
                 bs.boss_hp -= 10
                 
                 # v6.0 Frenzy: 每回合攻击
                 st.session_state.player.change_hp(-current_damage)
-                st.toast(f"💥 Boss 狂暴攻击！造成 {current_damage} 伤害", icon="🔥")
+                st.toast(f"💥 首领狂暴攻击！造成 {current_damage} 伤害", icon="🔥")
                 
                 bs.turn += 1
                 if bs.boss_hp <= 0:
@@ -925,8 +996,8 @@ def render_boss(resolve_node_callback: Callable, check_death_callback: Callable)
     
     elif bs.phase == 'victory':
         st.balloons()
-        st.success("🏆 Boss 已被击败！")
-        if st.button("🎁 获取奖励 (+100G)", type="primary"):
+        st.success("🏆 首领已被击败！")
+        if st.button("🎁 获取奖励（+100金币）", type="primary"):
             st.session_state.player.add_gold(100)
             st.session_state.player.advance_room()
             resolve_node_callback()
@@ -1050,7 +1121,7 @@ def render_event(resolve_node_callback: Callable):
                         gold = random.randint(30, 50)
                         player.add_gold(gold)
                         st.success(f"💰 成功！获得了 {gold} 金币")
-                    time.sleep(1)
+                    _pause(1)
                 elif effect == "upgrade_blue_cards":
                     player.blue_card_heal_buff = True
                     st.success("⚒️ 铁匠对你的蓝卡进行了加持！")
@@ -1103,10 +1174,10 @@ def _render_fountain_test(resolve_node_callback):
                 target.temp_level = "red"
                 st.success(f"✨ 奇迹！{target.word} 已恢复为红卡！")
                 if 'fountain_target' in st.session_state: del st.session_state.fountain_target
-                time.sleep(1.5)
+                _pause(1.5)
             else:
                 st.error("❌ 失败了，泉水变得浑浊...")
-                time.sleep(1)
+                _pause(1)
             
             st.session_state.event_subphase = None
             player.advance_room()
@@ -1218,7 +1289,7 @@ def _render_mysterious_book(resolve_node_callback):
                     st.error("👿 整个卡组被黑暗侵蚀了！")
                 else:
                     st.success("🛡️ 你抵挡住了精神攻击，什么也没发生。")
-                time.sleep(1.5)
+                _pause(1.5)
                 st.session_state.event_subphase = None
                 player.advance_room()
                 resolve_node_callback()
@@ -1234,7 +1305,7 @@ def _render_mysterious_book(resolve_node_callback):
                 # 后续需要在 change_hp 中检测此状态
                 st.session_state._greedy_curse = True 
                 st.warning("🤑 财富涌入，但你的灵魂变得脆弱。")
-                time.sleep(1.5)
+                _pause(1.5)
                 st.session_state.event_subphase = None
                 player.advance_room()
                 resolve_node_callback()
@@ -1242,102 +1313,120 @@ def _render_mysterious_book(resolve_node_callback):
 
 
 def render_shop(resolve_node_callback: Callable):
-    """商店 v6.0 - 含卡牌购买"""
-    st.header("🛒 商店")
+    """商店 v6.0"""
+    st.header("🏪 商店")
     player = st.session_state.player
-    st.caption(f"💰 {player.gold}G")
-    
-    # 道具商店
-    st.subheader("📦 道具")
-    if 'shop_items' not in st.session_state:
-        st.session_state.shop_items = ShopRegistry.get_random_selection(4)
-    
-    items = st.session_state.shop_items
-    cols = st.columns(len(items))
-    
-    for i, (item_id, item) in enumerate(items.items()):
-        with cols[i]:
-            with st.container(border=True):
-                st.markdown(f"### {item.icon} {item.name}")
-                st.caption(item.description)
-                st.markdown(f"💰 {item.price}G")
-                
-                can_buy = player.gold >= item.price
-                
-                if st.button("购买", key=f"shop_{item_id}", disabled=not can_buy):
-                    player.gold -= item.price
-                    
-                    if item.effect == "heal":
-                        player.change_hp(item.value)
-                    elif item.effect == "max_hp":
-                        player.max_hp += item.value
-                        player.hp = min(player.hp + item.value, player.max_hp)
-                        st.toast(f"💪 最大HP +{item.value}!", icon="❤️")
-                    elif item.effect == "grant_relic":
-                        player.relics.append(item.value)
-                        st.toast(f"🏆 获得圣遗物!", icon="✨")
-                    elif item.effect == "relic":
-                        player.relics.append(item.value)
-                    
-                    st.rerun()
-    
-    # v6.0 新增：卡牌商店
-    st.subheader("🎴 卡牌商店")
-    st.caption("从本局词池购买卡牌加入卡组")
-    
+    st.caption(f"当前金币 {player.gold}")
+
+    if 'shop_items' not in st.session_state or not isinstance(st.session_state.shop_items, dict) or 'relic_slot' not in st.session_state.shop_items:
+        st.session_state.shop_items = ShopRegistry.get_shop_inventory(total_slots=4, relic_chance=0.2)
+
+    inventory = st.session_state.shop_items
+    relic_slot = inventory.get('relic_slot')
+    other_slots = inventory.get('other_slots', [])
+
+    if relic_slot:
+        st.subheader("圣遗物")
+        cols = st.columns(1)
+        for i, (item_id, item) in enumerate([relic_slot]):
+            with cols[i]:
+                with st.container(border=True):
+                    st.markdown(f"### {item.icon} {item.name}")
+                    st.caption(item.description)
+                    st.markdown(f"{item.price} 金币")
+
+                    can_buy = player.gold >= item.price
+                    if st.button("购买", key=f"relic_{item_id}", disabled=not can_buy):
+                        player.gold -= item.price
+                        if item.effect == 'grant_relic':
+                            player.relics.append(item.value)
+                            st.toast("获得圣遗物")
+                        st.rerun()
+
+    st.subheader("道具 / 随机遗物")
+    if not other_slots:
+        st.info("暂无商品")
+    else:
+        cols = st.columns(len(other_slots))
+        for i, (item_id, item) in enumerate(other_slots):
+            with cols[i]:
+                with st.container(border=True):
+                    st.markdown(f"### {item.icon} {item.name}")
+                    st.caption(item.description)
+                    st.markdown(f"{item.price} 金币")
+
+                    can_buy = player.gold >= item.price
+                    if st.button("购买", key=f"shop_{item_id}", disabled=not can_buy):
+                        player.gold -= item.price
+                        if item.consumable:
+                            player.inventory.append(item_id)
+                            st.toast("已放入背包")
+                        else:
+                            if item.effect == 'heal':
+                                player.change_hp(item.value)
+                            elif item.effect == 'max_hp':
+                                player.max_hp += item.value
+                                player.hp = min(player.hp + item.value, player.max_hp)
+                                st.toast(f"最大生命 +{item.value}")
+                            elif item.effect == 'grant_relic':
+                                player.relics.append(item.value)
+                                st.toast("获得圣遗物")
+                            elif item.effect == 'relic':
+                                player.relics.append(item.value)
+                        st.rerun()
+
+    st.subheader("卡牌购买")
+    st.caption("购买后从卡池中选择一张加入牌组")
+
     card_cols = st.columns(3)
-    
-    # 红卡购买
+
     with card_cols[0]:
         red_count = player.purchase_counts.get("red", 0)
         red_price = ShopRegistry.get_card_price("red", red_count)
         with st.container(border=True):
-            st.markdown("### 🟥 红卡")
-            st.caption(f"价格递增：{red_price}G")
+            st.markdown("### 红卡")
+            st.caption(f"价格：{red_price} 金币")
             can_buy_red = player.gold >= red_price
-            if st.button(f"购买 ({red_price}G)", key="buy_red_card", disabled=not can_buy_red):
+            if st.button(f"购买 ({red_price} 金币)", key="buy_red_card", disabled=not can_buy_red):
                 player.gold -= red_price
                 player.purchase_counts["red"] = red_count + 1
                 st.session_state.pending_card_purchase = "red"
-                st.toast("🟥 选择一张红卡加入卡组", icon="🎴")
+                st.toast("请选择一张红卡加入牌组", icon="🟥")
                 st.rerun()
-    
-    # 蓝卡购买
+
     with card_cols[1]:
         blue_count = player.purchase_counts.get("blue", 0)
         blue_price = ShopRegistry.get_card_price("blue", blue_count)
         with st.container(border=True):
-            st.markdown("### 🟦 蓝卡")
-            st.caption(f"价格递增：{blue_price}G")
+            st.markdown("### 蓝卡")
+            st.caption(f"价格：{blue_price} 金币")
             can_buy_blue = player.gold >= blue_price
-            if st.button(f"购买 ({blue_price}G)", key="buy_blue_card", disabled=not can_buy_blue):
+            if st.button(f"购买 ({blue_price} 金币)", key="buy_blue_card", disabled=not can_buy_blue):
                 player.gold -= blue_price
                 player.purchase_counts["blue"] = blue_count + 1
                 st.session_state.pending_card_purchase = "blue"
-                st.toast("🟦 选择一张蓝卡加入卡组", icon="🎴")
+                st.toast("请选择一张蓝卡加入牌组", icon="🟦")
                 st.rerun()
-    
-    # 金卡购买（仅限一次）
+
     with card_cols[2]:
         gold_price = ShopRegistry.get_card_price("gold", 0)
         with st.container(border=True):
-            st.markdown("### 🟨 金卡")
-            st.caption("每局限购一张")
+            st.markdown("### 金卡")
+            st.caption("每局限购 1 次")
             can_buy_gold = player.gold >= gold_price and not player.purchase_counts.get("gold", 0) > 0
-            status = "已购买" if player.purchase_counts.get("gold", 0) > 0 else f"{gold_price}G"
+            status = "已售罄" if player.purchase_counts.get("gold", 0) > 0 else f"{gold_price} 金币"
             if st.button(f"购买 ({status})", key="buy_gold_card", disabled=not can_buy_gold):
                 player.gold -= gold_price
                 player.purchase_counts["gold"] = 1
                 st.session_state.pending_card_purchase = "gold"
-                st.toast("🟨 选择一张金卡加入卡组", icon="🎴")
+                st.toast("请选择一张金卡加入牌组", icon="🟨")
                 st.rerun()
-    
-    if st.button("🚪 离开", use_container_width=True):
+
+    if st.button("离开商店", use_container_width=True):
         if 'shop_items' in st.session_state:
             del st.session_state.shop_items
         player.advance_room()
         resolve_node_callback()
-
 
 def render_rest(resolve_node_callback: Callable):
     """营地 v6.0"""
@@ -1352,7 +1441,7 @@ def render_rest(resolve_node_callback: Callable):
     with col1:
         with st.container(border=True):
             st.markdown("### 😴 休息")
-            st.caption("恢复 30 HP")
+            st.caption("恢复 30 生命")
             if st.button("选择休息", use_container_width=True):
                 player.change_hp(30)
                 player.advance_room()
@@ -1362,20 +1451,20 @@ def render_rest(resolve_node_callback: Callable):
     with col2:
         with st.container(border=True):
             st.markdown("### ⚒️ 铁匠加持")
-            st.caption("100G → 蓝卡附加回血 Buff")
+            st.caption("100金币 → 蓝卡获得回血增益")
             can_afford = player.gold >= 100 and not player.blue_card_heal_buff
-            btn_text = "已拥有" if player.blue_card_heal_buff else "支付 100G"
+            btn_text = "已拥有" if player.blue_card_heal_buff else "支付 100金币"
             if st.button(btn_text, disabled=not can_afford, use_container_width=True):
                 player.gold -= 100
                 player.blue_card_heal_buff = True
-                st.success("⚒️ 蓝卡已升级！答对时将额外回复 5 HP")
+                st.success("⚒️ 蓝卡已升级！答对时额外回复 5 生命")
                 count = 0
                 for c in player.deck:
                     if c.card_type == CardType.BLUE_HYBRID:
                         c.is_temporary_buffed = True
                         count += 1
-                st.success(f"🔨 强化成功！{count} 张蓝卡获得回血Buff")
-                time.sleep(1.5)
+                st.success(f"🔨 强化成功！{count} 张蓝卡获得回血增益")
+                _pause(1.5)
                 player.advance_room()
                 resolve_node_callback()
                 st.rerun()
@@ -1419,11 +1508,12 @@ def _render_camp_upgrade(resolve_node_callback):
             if ans.lower() == card.word.lower():
                 # 永久升阶
                 card.tier = min(4, card.tier + 2) # 红(0)->蓝(2)->金(4)
+                _count_upgrade_for_red_reward()
                 st.success(f"🎊 成功！{card.word} 已永久升级！")
                 st.session_state.rest_phase = None
                 del st.session_state.upgrade_target
                 player.advance_room()
-                time.sleep(1.5)
+                _pause(1.5)
                 resolve_node_callback()
                 st.rerun()
             else:
@@ -1431,7 +1521,7 @@ def _render_camp_upgrade(resolve_node_callback):
                 st.session_state.rest_phase = None
                 del st.session_state.upgrade_target
                 player.advance_room()
-                time.sleep(1.5)
+                _pause(1.5)
                 resolve_node_callback()
                 st.rerun()
         
@@ -1441,82 +1531,111 @@ def _render_camp_upgrade(resolve_node_callback):
 
 
 def render_tower_prep(complete_callback: Callable):
-    """塔楼准备：初始卡组构建 Start Run v6.0"""
-    st.header("🏰 准备你的行囊 (Tower Prep)")
-    
-    # 获取全量词池 (从 session 中，由 main.py设置)
+    """爬塔准备阶段 v6.0"""
+    st.header("🏔️ 爬塔准备")
+
+    st.subheader("初始圣遗物（三选一）")
+    starter_relics = [
+        (
+            "START_BURNING_BLOOD",
+            "燃烧之血",
+            "生命<50：红卡伤害与反噬 +50%；红卡答对吸血 5；出牌后手牌为 0 且最后一张为红卡时抽 2（红优先）",
+        ),
+        (
+            "PAIN_ARMOR",
+            "苦痛之甲",
+            "蓝卡护甲 +50%；所有回血 -50%；非蓝卡反噬 -50%；出牌后手牌为 0 且最后一张为蓝卡时抽 2（优先红+蓝）",
+        ),
+        (
+            "WIZARD_HAT",
+            "巫师之帽",
+            "红/蓝正向效果 -30%（反噬不变）；金卡效果翻倍；金卡耐久=2；圣遗物数值效果翻倍；金卡后额外出牌 1 次",
+        ),
+    ]
+
+    if "starter_relic_choice" not in st.session_state:
+        st.session_state.starter_relic_choice = None
+
+    cols = st.columns(3)
+    for i, (rid, name, desc) in enumerate(starter_relics):
+        with cols[i]:
+            with st.container(border=True):
+                st.markdown(f"**{name}**")
+                st.caption(desc)
+                if st.button("选择", key=f"starter_relic_{rid}"):
+                    st.session_state.starter_relic_choice = rid
+
+    if st.session_state.starter_relic_choice:
+        selected_name = next(
+            (name for rid, name, _ in starter_relics if rid == st.session_state.starter_relic_choice),
+            st.session_state.starter_relic_choice,
+        )
+        st.info(f"已选择：{selected_name}")
+
+    st.divider()
+
     pool = st.session_state.get('full_draft_pool', [])
-    limit = 9
-    
-    from config import DECK_MAX_RED, DECK_MAX_BLUE, DECK_MAX_GOLD
-    
-    st.markdown("### 🎒 挑选你的初始卡组")
-    st.info(f"限制: {limit}张 | 🟥≤{DECK_MAX_RED}, 🟦≤{DECK_MAX_BLUE}, 🟨≤{DECK_MAX_GOLD}")
-    
+    from config import INITIAL_DECK_SIZE
+    limit = INITIAL_DECK_SIZE
+
+    st.markdown("### 组建初始牌组")
+    st.info(f"目标：{limit} 张 | 已选择 {len(st.session_state.get('prep_selected_indices', set()))} 张")
+
     if 'prep_selected_indices' not in st.session_state:
-        # 默认尝试选前9张
         st.session_state.prep_selected_indices = set(range(min(len(pool), limit)))
-    
+
     selected_indices = st.session_state.prep_selected_indices
-    
-    # 统计
+
     c_red = 0
     c_blue = 0
     c_gold = 0
-    
+
     for idx in selected_indices:
         if idx < len(pool):
             c = pool[idx]
-            if c.card_type == CardType.RED_BERSERK: c_red += 1
-            elif c.card_type == CardType.BLUE_HYBRID: c_blue += 1
-            elif c.card_type == CardType.GOLD_SUPPORT: c_gold += 1
-            
-    # 显示统计
+            if c.card_type == CardType.RED_BERSERK:
+                c_red += 1
+            elif c.card_type == CardType.BLUE_HYBRID:
+                c_blue += 1
+            elif c.card_type == CardType.GOLD_SUPPORT:
+                c_gold += 1
+
     c1, c2, c3 = st.columns(3)
-    c1.metric("🟥 红色", f"{c_red}/{DECK_MAX_RED}", delta_color="normal" if c_red<=DECK_MAX_RED else "inverse")
-    c2.metric("🟦 蓝色", f"{c_blue}/{DECK_MAX_BLUE}", delta_color="normal" if c_blue<=DECK_MAX_BLUE else "inverse")
-    c3.metric("🟨 金色", f"{c_gold}/{DECK_MAX_GOLD}", delta_color="normal" if c_gold<=DECK_MAX_GOLD else "inverse")
-    
+    c1.metric("红卡", f"{c_red}")
+    c2.metric("蓝卡", f"{c_blue}")
+    c3.metric("金卡", f"{c_gold}")
+
     st.divider()
-    
-    # 渲染卡池网格
+
     cols = st.columns(4)
     for i, card in enumerate(pool):
         with cols[i % 4]:
             is_sel = i in selected_indices
             btn_type = "primary" if is_sel else "secondary"
-            
-            # 检查是否可选 (如果已满且未选)
-            # 或 颜色已满
+
             can_toggle = True
-            if not is_sel:
-                if len(selected_indices) >= limit:
-                    can_toggle = False
-                elif card.card_type == CardType.RED_BERSERK and c_red >= DECK_MAX_RED:
-                    can_toggle = False
-                elif card.card_type == CardType.BLUE_HYBRID and c_blue >= DECK_MAX_BLUE:
-                    can_toggle = False
-                elif card.card_type == CardType.GOLD_SUPPORT and c_gold >= DECK_MAX_GOLD:
-                    can_toggle = False
-            
+            if not is_sel and len(selected_indices) >= limit:
+                can_toggle = False
+
             if st.button(f"{card.card_type.icon} {card.word}", key=f"tprep_{i}", type=btn_type, disabled=(not is_sel and not can_toggle)):
                 if is_sel:
                     selected_indices.remove(i)
                 else:
                     selected_indices.add(i)
                 st.rerun()
-                
+
     st.divider()
-    
-    is_valid = (len(selected_indices) == limit and 
-                c_red <= DECK_MAX_RED and 
-                c_blue <= DECK_MAX_BLUE and 
-                c_gold <= DECK_MAX_GOLD)
-    
-    if st.button("🚀 开启冒险 (Start Run)", type="primary", disabled=not is_valid, use_container_width=True):
-        # 分配卡组
+
+    has_relic_choice = bool(st.session_state.get("starter_relic_choice"))
+    is_valid = (len(selected_indices) == limit) and has_relic_choice
+
+    if st.button("✅ 开始爬塔", type="primary", disabled=not is_valid, use_container_width=True):
         selected_cards = [pool[i] for i in selected_indices]
         remaining_cards = [pool[i] for i in range(len(pool)) if i not in selected_indices]
-        
-        # 回调传递结果
+
+        chosen = st.session_state.get("starter_relic_choice")
+        if chosen and chosen not in st.session_state.player.relics:
+            st.session_state.player.relics.append(chosen)
+        if "starter_relic_choice" in st.session_state:
+            del st.session_state.starter_relic_choice
         complete_callback(selected_cards, remaining_cards)

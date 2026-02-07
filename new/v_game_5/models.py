@@ -5,7 +5,9 @@ from __future__ import annotations
 from enum import Enum, IntEnum
 from dataclasses import dataclass, field
 from typing import List, Dict, Any, Optional
+import random
 import streamlit as st
+from config import HAND_SIZE, GOLD_CARD_USES
 
 
 class GamePhase(Enum):
@@ -28,7 +30,7 @@ class NodeType(Enum):
     EVENT = "❓ 事件"
     REST = "🔥 营地"
     SHOP = "🛒 商店"
-    BOSS = "👹 Boss"
+    BOSS = "👹 首领"
 
 
 class WordTier(IntEnum):
@@ -92,15 +94,15 @@ class CardType(Enum):
 # 卡牌属性配置
 CARD_STATS = {
     CardType.RED_BERSERK: {
-        "damage": 25,
+        "damage": 15,
         "block": 0,
-        "penalty": 10,  # 答错自伤
+        "penalty": 5,
         "draw": 0,
         "buff": None
     },
     CardType.BLUE_HYBRID: {
-        "damage": 15,  # 从10改为15
-        "block": 10,
+        "damage": 8,
+        "block": 8,
         "penalty": 0,
         "draw": 0,
         "buff": None
@@ -109,13 +111,13 @@ CARD_STATS = {
         "damage": 5,
         "block": 0,
         "penalty": 0,
-        "draw": 1,
+        "draw": 2,
         "buff": "next_card_x2"  # 下张卡效果翻倍
     },
     CardType.BLACK_CURSE: {
-        "damage": 50,  # 黑卡高伤害
+        "damage": 20,
         "block": 0,
-        "penalty": 75,  # 答错高惩罚 (从50改为75)
+        "penalty": 15,
         "draw": 0,
         "buff": None
     }
@@ -136,6 +138,7 @@ class WordCard:
     is_blackened: bool = False # 是否已黑化（本局状态）
     temp_level: str = None     # 局内颜色状态 (red/blue/gold/black)
     is_temporary_buffed: bool = False # 蓝卡回血 5 Buff
+    gold_uses_remaining: int = 0  # ????????(??????)
     
     @property
     def card_type(self) -> CardType:
@@ -148,6 +151,10 @@ class WordCard:
         return CardType.from_tier(self.tier)
     
     @property
+    def icon(self) -> str:
+        return self.card_type.icon
+    
+    @property
     def stats(self) -> dict:
         return CARD_STATS.get(self.card_type, {})
     
@@ -158,7 +165,7 @@ class WordCard:
     @property
     def block(self) -> int:
         return self.stats.get("block", 0)
-    
+
     @property
     def penalty(self) -> int:
         return self.stats.get("penalty", 0)
@@ -193,37 +200,34 @@ class Enemy:
     attack: int = 10
     base_attack: int = 10  # 基础攻击力
     attack_count: int = 0  # 攻击次数（用于递增伤害）
-    action_timer: int = 2  # 每 2 回合攻击一次
-    current_timer: int = 2
+    action_timer: int = 3  # ?3-5??????
+    current_timer: int = 3
+    turns_elapsed: int = 0  # ????
     intent: str = "attack"
     is_elite: bool = False  # 是否精英怪
     is_boss: bool = False   # 是否 Boss (虽然 Boss 战单独处理，但为了 registry 兼容需要此字段)
     
     def __post_init__(self):
-        # 125 基础 + 8*层数，精英额外 +50
-        from config import ENEMY_HP_BASE, ENEMY_HP_ELITE, ENEMY_ATTACK
-        base_hp = ENEMY_HP_BASE + (self.level * 8)
+        from config import ENEMY_HP_BASE, ENEMY_HP_ELITE, ENEMY_HP_GROWTH, ENEMY_ATTACK
         if self.is_elite:
-            base_hp += 50 # 精英起始更高
-            self.base_attack = 15
+            base_hp = ENEMY_HP_ELITE + max(0, self.level - 1) * ENEMY_HP_GROWTH
         else:
-            self.base_attack = ENEMY_ATTACK # 10
-        
+            base_hp = ENEMY_HP_BASE + max(0, self.level - 1) * ENEMY_HP_GROWTH
+        self.base_attack = ENEMY_ATTACK
         self.hp = base_hp
         self.max_hp = base_hp
         self.attack = self.base_attack
+        self.action_timer = random.randint(3, 5)
         self.current_timer = self.action_timer
-
+        self.turns_elapsed = 0
     def tick(self) -> str:
+        self.turns_elapsed += 1
         self.current_timer -= 1
         if self.current_timer <= 0:
-            self.current_timer = self.action_timer
-            # 攻击时递增伤害
-            self.attack = self.base_attack + (self.attack_count * 5)
-            self.attack_count += 1
+            self.current_timer = random.randint(3, 5)
+            self.attack = self.base_attack + max(0, self.turns_elapsed - 3) * 3
             return "attack"
         return "charge"
-    
     def take_damage(self, amount: int):
         self.hp = max(0, self.hp - amount)
     
@@ -249,32 +253,50 @@ class CardCombatState:
     hand: List[WordCard] = field(default_factory=list)
     discard: List[WordCard] = field(default_factory=list)
     draw_pile: List[WordCard] = field(default_factory=list)
-    hand_size: int = 5
+    exhausted: List[WordCard] = field(default_factory=list)
+    hand_size: int = HAND_SIZE
     phase: CombatPhase = CombatPhase.LOADING
     current_card: Optional[WordCard] = None
     current_options: Optional[List[str]] = None
     turns: int = 0
-    next_card_x2: bool = False  # 下张卡效果翻倍
+    next_card_multiplier: int = 1  # 下张卡效果倍率
+    extra_actions: int = 0  # 额外出牌次数（本回合）
     
     def __post_init__(self):
         if self.enemy is None:
             self.enemy = Enemy()
-            
-        # 同步玩家手牌上限
+
+        # ????????
         if self.player:
             self.hand_size = self.player.hand_size
-        
-        # 初始化抽牌堆 (洗牌)
+
+        # gold uses (wizard hat sets to 2)
+        gold_uses = 2 if "WIZARD_HAT" in getattr(self.player, "relics", []) else GOLD_CARD_USES
+        for c in self.deck:
+            if c.card_type == CardType.GOLD_SUPPORT:
+                c.gold_uses_remaining = gold_uses
+
+        # ?????? (??)
         self.draw_pile = self.deck.copy()
-        import random
         random.shuffle(self.draw_pile)
-        
-        # 初始化词池 (用于干扰项)
+
+        # ????? (?????)
         self.word_pool = self.deck.copy()
-        
-        # 初始护甲重置
+
+        # ???????
         self.player.reset_block()
-    
+
+    def ensure_black_in_hand(self) -> bool:
+        """若有黑卡，保证至少一张进入手牌"""
+        if any(c.card_type == CardType.BLACK_CURSE for c in self.hand):
+            return False
+        for c in list(self.draw_pile):
+            if c.card_type == CardType.BLACK_CURSE:
+                self.draw_pile.remove(c)
+                self.hand.append(c)
+                return True
+        return False
+
     def load_card(self, card: WordCard) -> bool:
         if len(self.hand) >= self.hand_size:
             return False
@@ -296,12 +318,25 @@ class CardCombatState:
         self.phase = CombatPhase.BATTLE
         self.turns = 0
     
-    def play_card(self, card: WordCard):
+    def _remove_from_all_piles(self, card: WordCard):
+        for pile in (self.deck, self.draw_pile, self.discard, self.hand, self.exhausted):
+            while card in pile:
+                pile.remove(card)
+
+    def play_card(self, card: WordCard) -> bool:
         self.current_card = card
+        removed = False
         if card in self.hand:
             self.hand.remove(card)
-            self.discard.append(card)  # 打出的牌进入弃牌堆
-    
+            if card.card_type == CardType.GOLD_SUPPORT:
+                if card.gold_uses_remaining > 0:
+                    card.gold_uses_remaining -= 1
+                if card.gold_uses_remaining <= 0:
+                    removed = True
+                    self._remove_from_all_piles(card)
+                    return removed
+            self.discard.append(card)  # discard after play
+        return removed
     def recycle_discard(self) -> bool:
         """将弃牌堆洗回抽牌堆（杀戮尖塔机制）"""
         if not self.discard:
@@ -313,40 +348,59 @@ class CardCombatState:
         return True
     
     def draw_card(self) -> Optional[WordCard]:
-        """按权重从抽牌堆抽一张牌到手牌: 红(0.6) > 蓝(0.3) > 金(0.1)"""
+        """???????????"""
         if not self.draw_pile:
             if not self.recycle_discard():
                 return None
-        
+
         if self.draw_pile:
-            import random
-            # 定义权重映射
-            weight_map = {
-                CardType.RED_BERSERK: 0.6,
-                CardType.BLUE_HYBRID: 0.3,
-                CardType.GOLD_SUPPORT: 0.1,
-                CardType.BLACK_CURSE: 0.6  # 黑卡权重等同红卡
-            }
-            
-            # v6.0 加权抽取逻辑: Red > Blue > Gold
             candidates = self.draw_pile
             weights = []
             for c in candidates:
-                if c.card_type == CardType.RED_BERSERK: weights.append(60)
-                elif c.card_type == CardType.BLUE_HYBRID: weights.append(30)
-                elif c.card_type == CardType.GOLD_SUPPORT: weights.append(10)
-                else: weights.append(10)
-            
-            # 加权随机选择一张
+                if c.card_type == CardType.RED_BERSERK:
+                    base = 50
+                elif c.card_type == CardType.BLUE_HYBRID:
+                    base = 30
+                elif c.card_type == CardType.GOLD_SUPPORT:
+                    base = 20
+                else:
+                    base = 50
+
+                if getattr(c, "wrong_streak", 0) > 0:
+                    base *= 1.8
+                if getattr(c, "priority", "") == "ghost":
+                    base *= 1.5
+
+                weights.append(base)
+
             selected = random.choices(candidates, weights=weights, k=1)[0]
-            
-            # 从抽牌堆移除并添加到手牌
             self.draw_pile.remove(selected)
             self.hand.append(selected)
             return selected
         return None
 
-
+    def draw_with_preference(self, prefer_types: List[CardType], count: int) -> List[WordCard]:
+        """Draw cards with preferred types first."""
+        drawn: List[WordCard] = []
+        for _ in range(count):
+            if not self.draw_pile:
+                if not self.recycle_discard():
+                    break
+            selected = None
+            for t in prefer_types:
+                candidates = [c for c in self.draw_pile if c.card_type == t]
+                if candidates:
+                    selected = random.choice(candidates)
+                    break
+            if selected is None:
+                selected = self.draw_card()
+                if selected is not None:
+                    drawn.append(selected)
+                continue
+            self.draw_pile.remove(selected)
+            self.hand.append(selected)
+            drawn.append(selected)
+        return drawn
 @dataclass
 class Player:
     """玩家"""
@@ -360,8 +414,7 @@ class Player:
     relics: List[str] = field(default_factory=list)
     current_room: int = 0
     # v6.0 新增属性
-    armor: int = 0                    # 护甲值
-    hand_size: int = 5                # 手牌上限
+    hand_size: int = HAND_SIZE
     purchase_counts: Dict[str, int] = field(default_factory=lambda: {"red": 0, "blue": 0, "gold": 0})
     deck_limit: int = 9               # 卡组上限
     blue_card_heal_buff: bool = False # 蓝卡回血 Buff (兼容旧代码，新逻辑在卡牌上)
@@ -372,6 +425,9 @@ class Player:
         if amount < 0 and st.session_state.get("_greedy_curse", False):
             amount *= 2
             st.toast("⚠️ 贪婪反噬！受到伤害翻倍", icon="🤑")
+
+        if amount > 0 and "PAIN_ARMOR" in self.relics:
+            amount = int(amount * 0.5)
 
         # 护甲优先逻辑
         if amount < 0 and self.armor > 0:
@@ -388,17 +444,17 @@ class Player:
         if self.hp <= 0:
             st.error("💀 你由于体力耗尽倒下了...")
         elif amount < 0:
-            st.toast(f"💔 HP {amount}", icon="🩸")
+            st.toast(f"💔 生命 {amount}", icon="🩸")
         elif amount > 0:
-            st.toast(f"💚 HP +{amount}", icon="🌿")
+            st.toast(f"💚 生命 +{amount}", icon="🌿")
     
     def add_armor(self, amount: int):
         self.armor += amount
-        st.toast(f"🛡️ +{amount} 护甲", icon="🛡️")
+        st.toast(f"🛡️ 护甲 +{amount}", icon="🛡️")
     
     def add_gold(self, amount: int):
         self.gold += amount
-        st.toast(f"💰 +{amount}G")
+        st.toast(f"💰 金币 +{amount}")
     
     def is_dead(self) -> bool:
         return self.hp <= 0

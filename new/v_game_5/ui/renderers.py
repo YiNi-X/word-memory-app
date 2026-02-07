@@ -605,6 +605,11 @@ def _render_loading_phase(cs: CardCombatState):
 def _render_battle_phase(cs: CardCombatState, resolve_node_callback, check_death_callback):
     """战斗阶段"""
     player = st.session_state.player
+
+    if st.session_state.get("_end_turn_due_to_item"):
+        st.session_state._end_turn_due_to_item = False
+        _resolve_enemy_turn(cs, player, check_death_callback)
+        return
     
     # 检查是否被眩晕
     if st.session_state.get('_player_stunned'):
@@ -656,7 +661,11 @@ def _render_battle_phase(cs: CardCombatState, resolve_node_callback, check_death
             if removed:
                 _grant_red_card_from_pool("移除")
             if len(cs.hand) == 0:
-                if card.card_type == CardType.RED_BERSERK and "START_BURNING_BLOOD" in getattr(player, "relics", []):
+                if (
+                    card.card_type == CardType.RED_BERSERK
+                    and "START_BURNING_BLOOD" in getattr(player, "relics", [])
+                    and player.hp < 50
+                ):
                     cs.draw_with_preference([CardType.RED_BERSERK], 2)
                 elif card.card_type == CardType.BLUE_HYBRID and "PAIN_ARMOR" in getattr(player, "relics", []):
                     drawn = []
@@ -694,7 +703,9 @@ def _render_card_test(cs: CardCombatState, player, check_death_callback):
     answer = render_quiz_test(card, options)
     
     if answer:
+        pre_type = card.card_type
         correct = answer == card.word
+        word = card.word
         
         db = st.session_state.get('db')
         player_id = st.session_state.db_player.get('id')
@@ -723,6 +734,20 @@ def _render_card_test(cs: CardCombatState, player, check_death_callback):
             st.success(f"✅ 正确！")
             _apply_card_effect(card, cs, player, correct=True)
             TriggerBus.trigger("on_correct_answer", TriggerContext(player=player, enemy=cs.enemy, card=card, combat_state=cs))
+
+            if card.is_blackened or card.card_type == CardType.BLACK_CURSE:
+                black_streak = st.session_state.get("black_correct_streak", {})
+                black_streak[word] = black_streak.get(word, 0) + 1
+                if black_streak[word] >= 5:
+                    if card in player.deck:
+                        player.deck.remove(card)
+                    cs._remove_from_all_piles(card)
+                    cs.word_pool = [c for c in cs.word_pool if c.word != word]
+                    del black_streak[word]
+                    st.success(f"✨ 黑卡净化成功，已从本局移除：{word}")
+                    cs.current_card = None
+                    cs.current_options = None
+                st.session_state.black_correct_streak = black_streak
             
             # v6.0 正确清空错误计数
             card.wrong_streak = 0
@@ -733,17 +758,16 @@ def _render_card_test(cs: CardCombatState, player, check_death_callback):
             # 局内熟练度追踪
             from config import RED_TO_BLUE_UPGRADE_THRESHOLD, BLUE_TO_GOLD_UPGRADE_THRESHOLD
             streak = st.session_state.in_game_streak
-            word = card.word
             streak[word] = streak.get(word, 0) + 1
             
             # 达到阈值则升级卡牌 (temp_level)
-            if card.card_type == CardType.RED_BERSERK:
+            if pre_type == CardType.RED_BERSERK:
                 if streak[word] >= RED_TO_BLUE_UPGRADE_THRESHOLD:
                     card.temp_level = "blue"
                     st.toast(f"升级为蓝卡：{word}", icon="🟦")
                     _count_upgrade_for_red_reward()
                     streak[word] = 0  # 重置计数
-            elif card.card_type == CardType.BLUE_HYBRID:
+            elif pre_type == CardType.BLUE_HYBRID:
                 if streak[word] >= BLUE_TO_GOLD_UPGRADE_THRESHOLD:
                     card.temp_level = "gold"
                     st.toast(f"升级为金卡：{word}", icon="🟨")
@@ -755,6 +779,11 @@ def _render_card_test(cs: CardCombatState, player, check_death_callback):
             TriggerBus.trigger("on_wrong_answer", ctx)
             if not ctx.data.get('negate_wrong_penalty'):
                 _apply_card_effect(card, cs, player, correct=False)
+
+            if card.is_blackened or card.card_type == CardType.BLACK_CURSE:
+                black_streak = st.session_state.get("black_correct_streak", {})
+                black_streak[word] = 0
+                st.session_state.black_correct_streak = black_streak
             
             # ==========================================
             # v6.0 精简降级路径：金(1) -> 蓝(2) -> 红(3) -> 黑
@@ -795,35 +824,38 @@ def _render_card_test(cs: CardCombatState, player, check_death_callback):
             cs.current_options = None
             st.rerun()
             return
+        _resolve_enemy_turn(cs, player, check_death_callback)
 
-        intent = cs.enemy.tick()
-        if intent == "attack":
-            damage = cs.enemy.attack
-            if st.session_state.get('_item_shield', False):
-                st.session_state._item_shield = False
-                damage = 0
-                st.toast("🛡️ 护盾抵消了本次攻击", icon="🛡️")
-            else:
-                reduce = st.session_state.get('_item_damage_reduce', 0)
-                if reduce:
-                    damage = max(0, damage - reduce)
-                    st.session_state._item_damage_reduce = 0
-            if damage > 0:
-                player.change_hp(-damage)
-                st.warning(f"👹 敌人攻击！造成 {damage} 伤害")
-            else:
-                st.toast("🛡️ 本次伤害被抵消", icon="🛡️")
-            if check_death_callback():
-                return
-        
-        cs.current_card = None
-        cs.current_options = None
-        cs.turns += 1
-        # v6.0 护甲每局重置，不再自动清零（玩家需要手动获得护甲）
-        # 这里的 player.reset_block() 应该被移除，因为 Player 类现在有 armor
-        
-        _pause(1)
-        st.rerun()
+
+def _resolve_enemy_turn(cs: CardCombatState, player, check_death_callback):
+    intent = cs.enemy.tick()
+    if intent == "attack":
+        damage = cs.enemy.attack
+        if st.session_state.get('_item_shield', False):
+            st.session_state._item_shield = False
+            damage = 0
+            st.toast("🛡️ 护盾抵消了本次攻击", icon="🛡️")
+        else:
+            reduce = st.session_state.get('_item_damage_reduce', 0)
+            if reduce:
+                damage = max(0, damage - reduce)
+                st.session_state._item_damage_reduce = 0
+        if damage > 0:
+            player.change_hp(-damage)
+            st.warning(f"👹 敌人攻击！造成 {damage} 伤害")
+        else:
+            st.toast("🛡️ 本次伤害被抵消", icon="🛡️")
+        if check_death_callback():
+            return
+
+    cs.current_card = None
+    cs.current_options = None
+    cs.turns += 1
+    # v6.0 护甲每局重置，不再自动清零（玩家需要手动获得护甲）
+    # 这里的 player.reset_block() 应该被移除，因为 Player 类现在有 armor
+
+    _pause(1)
+    st.rerun()
 
 
 def _apply_card_effect(card: WordCard, cs: CardCombatState, player, correct: bool):
@@ -1274,42 +1306,31 @@ def _render_adventurer_loot(resolve_node_callback):
 def _render_mysterious_book(resolve_node_callback):
     """神秘书籍：分歧点"""
     player = st.session_state.player
-    st.markdown("书页散发着红蓝交替的光，你必须选择一条阅读路径：")
-    
-    col1, col2 = st.columns(2)
-    with col1:
-        with st.container(border=True):
-            st.markdown("### 💀 诅咒之门")
-            st.caption("50% 概率全卡组黑化！(极其危险)")
-            if st.button("阅读诅咒"):
-                if random.random() < 0.5:
-                    for c in player.deck:
-                        c.is_blackened = True
-                        c.temp_level = "black"
-                    st.error("👿 整个卡组被黑暗侵蚀了！")
-                else:
-                    st.success("🛡️ 你抵挡住了精神攻击，什么也没发生。")
-                _pause(1.5)
-                st.session_state.event_subphase = None
-                player.advance_room()
-                resolve_node_callback()
-                st.rerun()
+    st.markdown("你翻阅书页，命运在暗中掷骰。")
 
-    with col2:
-        with st.container(border=True):
+    if st.button("翻阅"):
+        if random.random() < 0.5:
+            st.markdown("### 💀 诅咒之门")
+            if random.random() < 0.5:
+                for c in player.deck:
+                    c.is_blackened = True
+                    c.temp_level = "black"
+                st.error("👿 整个卡组被黑暗侵蚀了！")
+            else:
+                st.success("🛡️ 你抵挡住了精神攻击，什么也没发生。")
+        else:
             st.markdown("### 💰 贪婪之理")
-            st.caption("金币翻倍，但你受到的所有伤害也翻倍！")
-            if st.button("拥抱贪婪"):
-                player.gold *= 2
-                # 记录贪婪 Buff (增加一个受损翻倍的状态)
-                # 后续需要在 change_hp 中检测此状态
-                st.session_state._greedy_curse = True 
-                st.warning("🤑 财富涌入，但你的灵魂变得脆弱。")
-                _pause(1.5)
-                st.session_state.event_subphase = None
-                player.advance_room()
-                resolve_node_callback()
-                st.rerun()
+            player.gold *= 2
+            # 记录贪婪 Buff (增加一个受损翻倍的状态)
+            # 后续需要在 change_hp 中检测此状态
+            st.session_state._greedy_curse = True
+            st.warning("🤑 财富涌入，但你的灵魂变得脆弱。")
+
+        _pause(1.5)
+        st.session_state.event_subphase = None
+        player.advance_room()
+        resolve_node_callback()
+        st.rerun()
 
 
 def render_shop(resolve_node_callback: Callable):
@@ -1481,6 +1502,14 @@ def _render_camp_upgrade(resolve_node_callback):
     """营地卡牌升阶逻辑"""
     st.subheader("🆙 词汇淬炼")
     player = st.session_state.player
+
+    if st.button("结束锻造", use_container_width=True):
+        if 'upgrade_target' in st.session_state:
+            del st.session_state.upgrade_target
+        st.session_state.rest_phase = None
+        player.advance_room()
+        resolve_node_callback()
+        st.rerun()
     
     # 选择要升级的卡牌
     upgradable = [c for c in player.deck if c.tier < 4] # 金卡无法再升
@@ -1510,11 +1539,8 @@ def _render_camp_upgrade(resolve_node_callback):
                 card.tier = min(4, card.tier + 2) # 红(0)->蓝(2)->金(4)
                 _count_upgrade_for_red_reward()
                 st.success(f"🎊 成功！{card.word} 已永久升级！")
-                st.session_state.rest_phase = None
                 del st.session_state.upgrade_target
-                player.advance_room()
-                _pause(1.5)
-                resolve_node_callback()
+                _pause(1.0)
                 st.rerun()
             else:
                 st.error("❌ 拼写错误，挑战失败！")

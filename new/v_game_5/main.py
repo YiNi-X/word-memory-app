@@ -34,7 +34,17 @@ from ui.renderers import (
     render_combat, render_boss, render_event, render_shop, render_rest,
     render_drafting, render_tower_prep
 )
-
+def _warn_missing_kimi_key():
+    api_key = ""
+    try:
+        api_key = st.secrets.get("KIMI_API_KEY", "")
+    except Exception:
+        api_key = ""
+    if not api_key:
+        api_key = KIMI_API_KEY
+    if not api_key:
+        st.session_state._warned_missing_kimi = True
+        st.error("⚠️ KIMI_API_KEY 未配置，AI 内容将使用 Mock 生成。")
 
 class GameManager:
     """游戏核心控制器 v5.4"""
@@ -115,18 +125,6 @@ class GameManager:
         except queue.Empty:
             return
 
-
-def _warn_missing_kimi_key():
-    api_key = ""
-    try:
-        api_key = st.secrets.get("KIMI_API_KEY", "")
-    except Exception:
-        api_key = ""
-    if not api_key:
-        api_key = KIMI_API_KEY
-    if not api_key:
-        st.session_state._warned_missing_kimi = True
-        st.error("⚠️ KIMI_API_KEY 未配置，AI 内容将使用 Mock 生成。")
     
     def start_new_game(self):
         """开始新游戏"""
@@ -421,6 +419,7 @@ def _warn_missing_kimi_key():
         return False
 
 
+
 def render_game():
     """游戏主渲染入口"""
     gm = GameManager()
@@ -500,8 +499,14 @@ st.set_page_config(page_title="单词尖塔 v5.4", page_icon="🗿", layout="wid
 
 st.markdown("""
 <style>
-    .stApp, .stApp * {
+    .stApp {
         font-family: "Microsoft YaHei", "PingFang SC", "Noto Sans SC", "SimHei", "Segoe UI Emoji", "Apple Color Emoji", "Noto Color Emoji", sans-serif;
+    }
+    .material-symbols-rounded,
+    .material-symbols-outlined,
+    .material-icons {
+        font-family: "Material Symbols Rounded" !important;
+        font-variation-settings: "FILL" 0, "wght" 400, "GRAD" 0, "opsz" 24;
     }
     .highlight-word { color: #ff6b6b; font-weight: bold; }
     .relic-item { padding: 4px 8px; margin: 2px 0; border-radius: 4px; background: rgba(255,255,255,0.1); }

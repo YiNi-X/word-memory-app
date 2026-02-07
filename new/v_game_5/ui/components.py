@@ -97,7 +97,11 @@ def render_backpack_panel(relics: list, inventory: list, in_combat: bool, combat
                 with st.expander(label):
                     st.caption(item.description)
                     supported = {"heal", "shield", "damage_reduce", "hint", "max_hp"}
-                    can_use = in_combat and item.consumable and item.effect in supported
+                    in_answer_phase = bool(in_combat and combat_state and getattr(combat_state, "current_card", None))
+                    if in_combat:
+                        can_use = item.consumable and item.effect in supported and not in_answer_phase
+                    else:
+                        can_use = item.consumable and item.effect in {"heal", "max_hp"}
                     if st.button("使用", key=f"use_item_{item_id}", disabled=not can_use):
                         inv = st.session_state.player.inventory
                         if item_id in inv:
@@ -117,6 +121,8 @@ def render_backpack_panel(relics: list, inventory: list, in_combat: bool, combat
                             st.session_state.player.hp = min(
                                 st.session_state.player.hp + item.value, st.session_state.player.max_hp
                             )
+                        if in_combat:
+                            st.session_state._end_turn_due_to_item = True
                         st.rerun()
 
 

@@ -36,7 +36,7 @@ def _red_heavy_strike(ctx: EffectContext):
     ctx.enemy.take_damage(damage)
     ctx.st.toast(f"造成 {damage} 伤害")
 
-    if "START_BURNING_BLOOD" in getattr(ctx.player, "relics", []):
+    if "START_BURNING_BLOOD" in getattr(ctx.player, "relics", []) and ctx.player.hp < 50:
         leech = 5
         if "WIZARD_HAT" in getattr(ctx.player, "relics", []):
             leech *= 2

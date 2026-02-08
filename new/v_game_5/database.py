@@ -473,27 +473,42 @@ class GameDB:
                 
                 return {"upgraded": new_tier > current_tier, "new_tier": new_tier}
             else:
-                # 答错: 降级 + 标记为 GHOST
-                new_tier = max(0, current_tier - 1)
+                # 答错只记录错题与优先级，不在数据库层直接降级。
+                # 降级由战斗层统一执行，避免双重降级导致状态错位。
                 new_errors = errors + 1
                 
                 conn.execute("""UPDATE deck SET 
-                    tier = ?, consecutive_correct = 0, error_count = ?, 
+                    consecutive_correct = 0, error_count = ?, 
                     priority = 'ghost', last_seen_room = ?
                     WHERE id = ?""",
-                    (new_tier, new_errors, current_room, row['id']))
+                    (new_errors, current_room, row['id']))
                 
-                return {"upgraded": False, "new_tier": new_tier, "downgraded": new_tier < current_tier}
+                return {"upgraded": False, "new_tier": current_tier, "downgraded": False}
 
-    def set_word_tier(self, player_id: int, word: str, tier: int, current_room: int = 0) -> bool:
+    def set_word_tier(
+        self,
+        player_id: int,
+        word: str,
+        tier: int,
+        current_room: int = 0,
+        priority: Optional[str] = None,
+    ) -> bool:
         """强制设置单词等级（用于永久升级）"""
         with self._get_conn() as conn:
-            cur = conn.execute(
-                """UPDATE deck SET
-                    tier = ?, consecutive_correct = 0, last_seen_room = ?, priority = 'normal'
-                    WHERE player_id = ? AND word = ?""",
-                (tier, current_room, player_id, word),
-            )
+            if priority is None:
+                cur = conn.execute(
+                    """UPDATE deck SET
+                        tier = ?, consecutive_correct = 0, last_seen_room = ?
+                        WHERE player_id = ? AND word = ?""",
+                    (tier, current_room, player_id, word),
+                )
+            else:
+                cur = conn.execute(
+                    """UPDATE deck SET
+                        tier = ?, consecutive_correct = 0, last_seen_room = ?, priority = ?
+                        WHERE player_id = ? AND word = ?""",
+                    (tier, current_room, priority, player_id, word),
+                )
             return cur.rowcount > 0
     
     # ==========================================

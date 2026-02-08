@@ -27,6 +27,7 @@ from ai_service import CyberMind, MockGenerator
 from models import GamePhase, NodeType, Player, WordCard, CardType
 from state_utils import reset_combat_flags
 from systems import WordPool, MapSystem
+from systems.run_flow_utils import dump_map_state, restore_map_state
 from registries import EventRegistry
 from ui.components import render_hud
 from ui.renderers import (
@@ -103,6 +104,8 @@ class GameManager:
 
     def _build_run_state(self) -> dict:
         player = st.session_state.player
+        game_map = st.session_state.get("game_map")
+        map_state = dump_map_state(game_map)
         return {
             "gold": player.gold,
             "hp": player.hp,
@@ -111,6 +114,7 @@ class GameManager:
             "relics": list(player.relics),
             "inventory": list(player.inventory),
             "game_word_pool": self._serialize_card_pool(st.session_state.get("game_word_pool", [])),
+            "map_state": map_state,
         }
 
     def _consume_boss_queue(self):
@@ -187,12 +191,26 @@ class GameManager:
         st.session_state.game_map.next_options = st.session_state.game_map.generate_next_options()
         
         # 8. Boss生成 (后台)
+        st.session_state.boss_article_cache = None
+        st.session_state.boss_generation_queue = queue.Queue()
         all_words_list = [{**w, "word": w['word']} for w in game_pool]
         st.session_state.boss_generation_status = 'generating'
         self._start_background_boss_generation(all_words_list)
         
         # 清除旧状态
-        for key in ['card_combat', 'boss_state', 'boss_card_combat', 'shop_items', 'draft_candidates', 'word_pool', 'prep_indices']:
+        for key in [
+            'card_combat',
+            'boss_state',
+            'boss_card_combat',
+            'shop_items',
+            'draft_candidates',
+            'word_pool',
+            'prep_indices',
+            'pending_card_purchase',
+            'pending_card_price',
+            'shop_card_choices',
+            'shop_card_choice_type',
+        ]:
             if key in st.session_state:
                 del st.session_state[key]
         
@@ -242,6 +260,7 @@ class GameManager:
         # 恢复地图
         st.session_state.game_map = MapSystem(total_floors=TOTAL_FLOORS)
         st.session_state.game_map.floor = save.get('floor', 0)
+        restore_map_state(st.session_state.game_map, state.get("map_state"))
         st.session_state.game_map.next_options = st.session_state.game_map.generate_next_options()
         
         st.session_state.word_pool = WordPool(
@@ -271,6 +290,10 @@ class GameManager:
                     priority=w.get('priority', 'normal')
                 ) for w in game_pool if w['word'] not in deck_words
             ]
+
+        for key in ('pending_card_purchase', 'pending_card_price', 'shop_card_choices', 'shop_card_choice_type'):
+            if key in st.session_state:
+                del st.session_state[key]
         
         st.session_state.phase = GamePhase.MAP_SELECT
         st.rerun()

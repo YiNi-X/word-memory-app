@@ -261,7 +261,14 @@ class CombatEngine:
                     if not c.is_blackened:
                         c.temp_level = None
             if db and player_id:
-                db.set_word_tier(player_id, card.word, new_tier, current_room)
+                next_priority = "ghost" if level == "warning" else "normal"
+                db.set_word_tier(
+                    player_id,
+                    card.word,
+                    new_tier,
+                    current_room,
+                    priority=next_priority,
+                )
             CombatEngine._emit(events, level, label, icon)
 
         if correct:

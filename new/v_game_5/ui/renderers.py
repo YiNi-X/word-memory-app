@@ -24,6 +24,7 @@ from registries import EventRegistry, ShopRegistry
 from systems.trigger_bus import TriggerBus, TriggerContext
 from systems.combat_engine import CombatEngine
 from systems.combat_events import CombatEvent
+from systems.run_flow_utils import convert_event_node_to_combat, rollback_purchase_counts
 from ai_service import CyberMind, MockGenerator, BossPreloader
 from ui.components import (
     play_audio, render_word_card, render_card_slot, render_enemy,
@@ -1528,14 +1529,11 @@ def _render_adventurer_loot(resolve_node_callback):
     if result == "combat":
         st.error("👹 陷阱！尸体站了起来！此地不宜久留...")
         if st.button("进入战斗 (消耗一次小怪次数)"):
-            # 逻辑上，我们应该把当前的 EVENT 节点变为 COMBAT
-            # 触发战斗并消耗一次小怪次数
-            st.session_state.game_map.current_node.type = NodeType.COMBAT
+            convert_event_node_to_combat(st.session_state.game_map.current_node, NodeType.COMBAT)
             st.toast("⚠️ 事件战斗触发", icon="⚔️")
             
             del st.session_state.adv_loot_result
             st.session_state.event_subphase = None
-            resolve_node_callback()
             st.rerun()
             
     elif result == "cards":
@@ -1669,11 +1667,100 @@ def _render_graveyard(resolve_node_callback):
             st.rerun()
 
 
+def _clear_pending_card_purchase_state():
+    for key in ("pending_card_purchase", "pending_card_price", "shop_card_choices", "shop_card_choice_type"):
+        if key in st.session_state:
+            del st.session_state[key]
+
+
+def _rollback_pending_card_purchase(player, pending_type: str):
+    refund = int(st.session_state.get("pending_card_price", 0) or 0)
+    if refund > 0:
+        player.gold += refund
+    player.purchase_counts = rollback_purchase_counts(player.purchase_counts, pending_type)
+    _clear_pending_card_purchase_state()
+
+
+def _render_pending_card_purchase() -> bool:
+    pending = st.session_state.get("pending_card_purchase")
+    if not pending:
+        return False
+
+    player = st.session_state.player
+    target_map = {
+        "red": CardType.RED_BERSERK,
+        "blue": CardType.BLUE_HYBRID,
+        "gold": CardType.GOLD_SUPPORT,
+    }
+    target_type = target_map.get(pending)
+    if target_type is None:
+        _clear_pending_card_purchase_state()
+        return False
+
+    if (
+        "shop_card_choices" not in st.session_state
+        or st.session_state.get("shop_card_choice_type") != pending
+    ):
+        deck_words = {c.word for c in player.deck}
+        pool = st.session_state.get("game_word_pool") or []
+        candidates = [c for c in pool if c.card_type == target_type and c.word not in deck_words]
+        random.shuffle(candidates)
+        st.session_state.shop_card_choices = candidates[: min(6, len(candidates))]
+        st.session_state.shop_card_choice_type = pending
+
+    choices = st.session_state.get("shop_card_choices", [])
+    st.subheader("卡牌购买：选择一张加入牌组")
+    st.caption("已完成扣款，请从候选卡牌中选择 1 张。")
+
+    if not choices:
+        _rollback_pending_card_purchase(player, pending)
+        st.warning("该颜色在词池中无可购买卡牌，已自动退款。")
+        st.rerun()
+        return True
+
+    cols = st.columns(min(3, len(choices)))
+    for i, card in enumerate(choices):
+        with cols[i % len(cols)]:
+            with st.container(border=True):
+                st.markdown(f"### {card.card_type.icon} {card.word}")
+                st.caption(card.meaning)
+                st.caption(f"阶级: {card.tier}")
+                if st.button("购买这张", key=f"pick_shop_card_{pending}_{i}", type="primary", use_container_width=True):
+                    player.add_card_to_deck(card)
+                    pool = st.session_state.get("game_word_pool") or []
+                    removed = False
+                    next_pool = []
+                    for item in pool:
+                        if not removed and item.word == card.word and item.tier == card.tier:
+                            removed = True
+                            continue
+                        next_pool.append(item)
+                    if not removed:
+                        next_pool = [item for item in pool if item.word != card.word]
+                    st.session_state.game_word_pool = next_pool
+                    _clear_pending_card_purchase_state()
+                    st.toast(f"已购入 {card.word}", icon="🎴")
+                    st.rerun()
+                    return True
+
+    if st.button("取消购买并退款", key=f"cancel_shop_card_purchase_{pending}", use_container_width=True):
+        _rollback_pending_card_purchase(player, pending)
+        st.toast("已取消并退款", icon="↩️")
+        st.rerun()
+        return True
+
+    return True
+
+
 def render_shop(resolve_node_callback: Callable):
     """商店 v6.0"""
     st.header("🏪 商店")
     player = st.session_state.player
     st.caption(f"当前金币 {player.gold}")
+
+    if st.session_state.get("pending_card_purchase"):
+        _render_pending_card_purchase()
+        return
 
     if 'shop_items' not in st.session_state or not isinstance(st.session_state.shop_items, dict) or 'relic_slots' not in st.session_state.shop_items:
         st.session_state.shop_items = ShopRegistry.get_shop_inventory(
@@ -1760,6 +1847,10 @@ def render_shop(resolve_node_callback: Callable):
                 player.gold -= red_price
                 player.purchase_counts["red"] = red_count + 1
                 st.session_state.pending_card_purchase = "red"
+                st.session_state.pending_card_price = red_price
+                if "shop_card_choices" in st.session_state:
+                    del st.session_state.shop_card_choices
+                st.session_state.shop_card_choice_type = "red"
                 st.toast("请选择一张红卡加入牌组", icon="🟥")
                 st.rerun()
 
@@ -1774,6 +1865,10 @@ def render_shop(resolve_node_callback: Callable):
                 player.gold -= blue_price
                 player.purchase_counts["blue"] = blue_count + 1
                 st.session_state.pending_card_purchase = "blue"
+                st.session_state.pending_card_price = blue_price
+                if "shop_card_choices" in st.session_state:
+                    del st.session_state.shop_card_choices
+                st.session_state.shop_card_choice_type = "blue"
                 st.toast("请选择一张蓝卡加入牌组", icon="🟦")
                 st.rerun()
 
@@ -1788,6 +1883,10 @@ def render_shop(resolve_node_callback: Callable):
                 player.gold -= gold_price
                 player.purchase_counts["gold"] = 1
                 st.session_state.pending_card_purchase = "gold"
+                st.session_state.pending_card_price = gold_price
+                if "shop_card_choices" in st.session_state:
+                    del st.session_state.shop_card_choices
+                st.session_state.shop_card_choice_type = "gold"
                 st.toast("请选择一张金卡加入牌组", icon="🟨")
                 st.rerun()
 
@@ -1888,7 +1987,13 @@ def _render_camp_upgrade(resolve_node_callback):
                 card.tier = min(4, card.tier + 2) # 红(0)->蓝(2)->金(4)
                 db = st.session_state.db
                 current_room = st.session_state.game_map.floor if st.session_state.get("game_map") else 0
-                db.set_word_tier(st.session_state.player.id, card.word, card.tier, current_room)
+                db.set_word_tier(
+                    st.session_state.player.id,
+                    card.word,
+                    card.tier,
+                    current_room,
+                    priority="normal",
+                )
                 if old_tier in (2, 3) and card.tier >= 4:
                     _grant_red_card_from_pool("蓝升金")
                 st.success(f"🎊 成功！{card.word} 已永久升级！")

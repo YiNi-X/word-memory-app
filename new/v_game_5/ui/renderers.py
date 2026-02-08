@@ -11,6 +11,7 @@ if str(_parent) not in sys.path:
 import streamlit as st
 import random
 import time
+import html
 from typing import Callable
 
 from models import (
@@ -899,7 +900,7 @@ def _resolve_boss_enemy_turn(cs: CardCombatState, player: Player, bs: BossState)
     return events
 
 
-def _render_boss_skill_quiz(bs: BossState, cs: CardCombatState, check_death_callback: Callable) -> bool:
+def _render_boss_skill_interrupt_panel(bs: BossState, cs: CardCombatState, check_death_callback: Callable) -> bool:
     quiz = bs.active_quiz or {}
     quiz_type = str(quiz.get("type", "vocab"))
     label = "词汇破绽" if quiz_type == "vocab" else "首领终极技"
@@ -908,51 +909,74 @@ def _render_boss_skill_quiz(bs: BossState, cs: CardCombatState, check_death_call
         bs.active_quiz = None
         return False
 
-    with st.container(border=True):
-        st.markdown(f"### {label}")
-        st.markdown(quiz.get("question", ""))
-        choice = st.radio(
-            "选择:",
-            options,
-            key=f"boss_skill_choice_{bs.quiz_asked}_{cs.turns}",
-        )
-        if st.button("提交答案", type="primary", key=f"boss_skill_submit_{bs.quiz_asked}_{cs.turns}"):
-            player = st.session_state.player
-            correct = choice == quiz.get("answer")
-            if quiz_type == "vocab":
-                if correct:
-                    damage = int(quiz.get("damage_to_boss", 20))
-                    cs.enemy.take_damage(damage)
-                    st.success(f"命中首领弱点，造成 {damage} 伤害")
-                else:
-                    st.warning("未能命中首领弱点")
+    token = f"{bs.quiz_asked}-{cs.turns}"
+    panel_class = "boss-skill-vocab" if quiz_type == "vocab" else "boss-skill-reading"
+    question = html.escape(str(quiz.get("question", "")))
+    st.markdown(
+        f"""
+<div class="boss-interrupt-mask" data-token="{token}">
+  <div class="boss-interrupt-pulse"></div>
+</div>
+<div class="boss-interrupt-shell {panel_class}" data-token="{token}">
+  <div class="boss-interrupt-card">
+    <div class="boss-interrupt-alert">技能打断</div>
+    <div class="boss-interrupt-meta">{label} · 第 {bs.quiz_asked + 1}/{bs.death_lock_until_quiz_count} 题</div>
+    <div class="boss-interrupt-question">{question}</div>
+    <div class="boss-interrupt-tip">技能处理中，暂不可出牌，请先完成应对。</div>
+  </div>
+</div>
+""",
+        unsafe_allow_html=True,
+    )
+
+    choice = st.radio(
+        "应对选项",
+        options,
+        key=f"boss_skill_choice_{bs.quiz_asked}_{cs.turns}",
+        label_visibility="collapsed",
+    )
+    if st.button(
+        "立即应对",
+        type="primary",
+        key=f"boss_skill_submit_{bs.quiz_asked}_{cs.turns}",
+        use_container_width=True,
+    ):
+        player = st.session_state.player
+        correct = choice == quiz.get("answer")
+        if quiz_type == "vocab":
+            if correct:
+                damage = int(quiz.get("damage_to_boss", 20))
+                cs.enemy.take_damage(damage)
+                st.success(f"命中首领弱点，造成 {damage} 伤害")
             else:
-                if correct:
-                    st.success("成功识破首领终极技")
-                else:
-                    damage = int(quiz.get("damage_to_player", 10))
-                    player.change_hp(-damage)
-                    st.error(f"终极技命中你，受到 {damage} 伤害")
-                    if check_death_callback():
-                        return True
+                st.warning("未能命中首领弱点")
+        else:
+            if correct:
+                st.success("成功识破首领终极技")
+            else:
+                damage = int(quiz.get("damage_to_player", 10))
+                player.change_hp(-damage)
+                st.error(f"终极技命中你，受到 {damage} 伤害")
+                if check_death_callback():
+                    return True
 
-            bs.quiz_asked += 1
-            bs.active_quiz = None
-            bs.next_quiz_turn += bs.quiz_interval_turns
-            if _enforce_boss_death_lock(bs, cs):
-                st.warning("尚未读完其真名，首领强行维持形体！")
+        bs.quiz_asked += 1
+        bs.active_quiz = None
+        bs.next_quiz_turn += bs.quiz_interval_turns
+        if _enforce_boss_death_lock(bs, cs):
+            st.warning("尚未读完其真名，首领强行维持形体！")
 
-            if bs.quiz_asked >= bs.death_lock_until_quiz_count and cs.enemy.hp > 0:
-                bs.frenzy_active = True
-                st.warning("首领进入狂暴收尾阶段")
+        if bs.quiz_asked >= bs.death_lock_until_quiz_count and cs.enemy.hp > 0:
+            bs.frenzy_active = True
+            st.warning("首领进入狂暴收尾阶段")
 
-            if cs.enemy.hp <= 0 and bs.quiz_asked >= bs.death_lock_until_quiz_count:
-                cs.phase = CombatPhase.VICTORY
-                bs.phase = "victory"
+        if cs.enemy.hp <= 0 and bs.quiz_asked >= bs.death_lock_until_quiz_count:
+            cs.phase = CombatPhase.VICTORY
+            bs.phase = "victory"
 
-            _pause(0.6)
-            st.rerun()
-            return True
+        _pause(0.6)
+        st.rerun()
+        return True
     return False
 
 
@@ -1138,7 +1162,7 @@ def render_boss(resolve_node_callback: Callable, check_death_callback: Callable)
                 bs.active_quiz = bs.quiz_queue.pop(0)
 
         if bs.active_quiz:
-            if _render_boss_skill_quiz(bs, cs, check_death_callback):
+            if _render_boss_skill_interrupt_panel(bs, cs, check_death_callback):
                 return
             return
 

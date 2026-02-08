@@ -522,6 +522,105 @@ st.markdown("""
     .card-red { border-left: 4px solid #e74c3c; }
     .card-blue { border-left: 4px solid #3498db; }
     .card-gold { border-left: 4px solid #f39c12; }
+
+    @keyframes bossMaskIn {
+        from { opacity: 0; }
+        to { opacity: 1; }
+    }
+    @keyframes bossCardPulse {
+        0% { transform: translateY(6px) scale(0.98); box-shadow: 0 0 0 rgba(0,0,0,0.0); }
+        100% { transform: translateY(0) scale(1); box-shadow: 0 20px 60px rgba(0,0,0,0.35); }
+    }
+    @keyframes bossAlertSweep {
+        0% { background-position: -180% 0; }
+        100% { background-position: 180% 0; }
+    }
+    .boss-interrupt-mask {
+        position: fixed;
+        inset: 0;
+        background: rgba(8, 12, 20, 0.56);
+        backdrop-filter: blur(2px);
+        z-index: 900;
+        animation: bossMaskIn 220ms ease-out;
+        pointer-events: none;
+    }
+    .boss-interrupt-pulse {
+        position: absolute;
+        inset: 0;
+        background:
+            radial-gradient(circle at 50% 36%, rgba(255, 96, 64, 0.10), rgba(15, 20, 32, 0.02) 42%, transparent 68%);
+    }
+    .boss-interrupt-shell {
+        position: relative;
+        width: min(820px, 92vw);
+        margin: 8px auto 14px auto;
+        z-index: 901;
+    }
+    .boss-interrupt-card {
+        border-radius: 16px;
+        padding: 14px 16px;
+        border: 1px solid rgba(255,255,255,0.18);
+        background: linear-gradient(160deg, rgba(20,26,40,0.95), rgba(12,17,28,0.96));
+        animation: bossCardPulse 260ms ease-out;
+    }
+    .boss-interrupt-alert {
+        display: inline-block;
+        padding: 4px 10px;
+        border-radius: 999px;
+        font-size: 12px;
+        font-weight: 700;
+        letter-spacing: 0.6px;
+        text-transform: uppercase;
+        background: linear-gradient(90deg, rgba(255,255,255,0.1), rgba(255,255,255,0.35), rgba(255,255,255,0.1));
+        background-size: 180% 100%;
+        animation: bossAlertSweep 1.8s linear infinite;
+    }
+    .boss-interrupt-meta {
+        margin-top: 8px;
+        font-size: 13px;
+        opacity: 0.92;
+    }
+    .boss-interrupt-question {
+        margin-top: 10px;
+        max-height: 180px;
+        overflow: auto;
+        line-height: 1.5;
+        font-size: 17px;
+        font-weight: 700;
+    }
+    .boss-interrupt-tip {
+        margin-top: 8px;
+        font-size: 12px;
+        opacity: 0.84;
+    }
+    .boss-skill-vocab .boss-interrupt-card {
+        border-color: rgba(255, 120, 88, 0.62);
+        box-shadow: 0 0 0 1px rgba(255, 90, 64, 0.20) inset;
+    }
+    .boss-skill-vocab .boss-interrupt-alert {
+        color: #ffe4de;
+    }
+    .boss-skill-reading .boss-interrupt-card {
+        border-color: rgba(84, 182, 255, 0.60);
+        box-shadow: 0 0 0 1px rgba(50, 152, 255, 0.20) inset;
+    }
+    .boss-skill-reading .boss-interrupt-alert {
+        color: #e4f2ff;
+    }
+    @media (max-width: 768px) {
+        .boss-interrupt-shell {
+            width: min(94vw, 94vw);
+            margin-top: 4px;
+        }
+        .boss-interrupt-card {
+            padding: 12px 12px;
+            border-radius: 12px;
+        }
+        .boss-interrupt-question {
+            font-size: 15px;
+            max-height: 150px;
+        }
+    }
 </style>
 """, unsafe_allow_html=True)
 render_game()

@@ -192,7 +192,7 @@ class GameManager:
         self._start_background_boss_generation(all_words_list)
         
         # 清除旧状态
-        for key in ['card_combat', 'boss_state', 'shop_items', 'draft_candidates', 'word_pool', 'prep_indices']:
+        for key in ['card_combat', 'boss_state', 'boss_card_combat', 'shop_items', 'draft_candidates', 'word_pool', 'prep_indices']:
             if key in st.session_state:
                 del st.session_state[key]
         
@@ -319,8 +319,9 @@ class GameManager:
             try:
                 ai = CyberMind()
                 article = ai.generate_article(words)
-                if article and article.get('article_english'):
-                    quizzes = ai.generate_quiz(words, article['article_english'])
+                article_content = article.get("content") if article else ""
+                if article and article_content:
+                    quizzes = ai.generate_quiz(words, article_content)
                     result = {
                         'article': article,
                         'quizzes': quizzes
@@ -346,7 +347,7 @@ class GameManager:
         st.session_state.game_map.current_node = node
         st.session_state.phase = GamePhase.IN_NODE
         
-        for key in ['card_combat', 'boss_state']:
+        for key in ['card_combat', 'boss_state', 'boss_card_combat']:
             if key in st.session_state:
                 del st.session_state[key]
         
@@ -356,7 +357,7 @@ class GameManager:
         """结算节点"""
         ms = st.session_state.game_map
         
-        for key in ['card_combat', 'boss_state']:
+        for key in ['card_combat', 'boss_state', 'boss_card_combat']:
             if key in st.session_state:
                 del st.session_state[key]
 

@@ -22,6 +22,7 @@ from config import HAND_SIZE, ENEMY_HP_BASE, ENEMY_ATTACK, ENEMY_ACTION_TIMER, U
 from registries import EventRegistry, ShopRegistry
 from systems.trigger_bus import TriggerBus, TriggerContext
 from systems.combat_engine import CombatEngine
+from systems.combat_events import CombatEvent
 from ai_service import CyberMind, MockGenerator, BossPreloader
 from ui.components import (
     play_audio, render_word_card, render_card_slot, render_enemy,
@@ -421,12 +422,6 @@ def _complete_combat_victory(cs: CardCombatState, resolve_node_callback: Callabl
     player.add_gold(gold_reward)
     player.advance_room()
     
-    # 如果战斗已耗尽，启动 Boss 预加载
-    game_map = st.session_state.get('game_map')
-    if game_map and game_map.normal_combats_remaining == 0 and game_map.elite_combats_remaining == 0:
-        words = [{"word": c.word, "meaning": c.meaning} for c in player.deck]
-        BossPreloader.start_preload(words)
-    
     # 记录本局使用过的卡牌，供下局轮换
     if 'card_combat' in st.session_state:
         used_words = {c.word for c in st.session_state.card_combat.discard}
@@ -787,158 +782,413 @@ def _render_card_test(cs: CardCombatState, player, check_death_callback):
 # 其他页面
 # ==========================================
 
+def _boss_article_content(article: dict) -> str:
+    if not isinstance(article, dict):
+        return ""
+    return str(article.get("content") or article.get("article_english") or "")
+
+
+def _boss_article_summary(article: dict) -> str:
+    if not isinstance(article, dict):
+        return ""
+    return str(article.get("summary_cn") or article.get("article_chinese") or "")
+
+
+def _normalize_boss_article(article: dict, words: list) -> dict:
+    normalized = CyberMind.normalize_article_payload(article, words) if isinstance(article, dict) else None
+    if normalized:
+        return normalized
+    return MockGenerator.generate_article(words)
+
+
+def _normalize_boss_quizzes(quizzes: dict, words: list) -> dict:
+    normalized = CyberMind.normalize_quiz_payload(quizzes) if isinstance(quizzes, dict) else None
+    if normalized:
+        return normalized
+    return MockGenerator.generate_quiz(words)
+
+
+def _build_boss_quiz_queue(quizzes: dict) -> list:
+    vocab = list((quizzes or {}).get("vocab_attacks", []))
+    reading = list((quizzes or {}).get("boss_ultimates", []))
+    queue = []
+    queue.extend(vocab[:3])
+    queue.extend(reading[:2])
+
+    if len(queue) < 5:
+        extras = vocab[3:] + reading[2:]
+        for item in extras:
+            queue.append(item)
+            if len(queue) >= 5:
+                break
+
+    if len(queue) < 5:
+        fallback = MockGenerator.generate_quiz([])
+        extras = fallback.get("vocab_attacks", []) + fallback.get("boss_ultimates", [])
+        for item in extras:
+            queue.append(item)
+            if len(queue) >= 5:
+                break
+
+    return queue[:5]
+
+
+def _boss_init_combat_state(bs: BossState) -> CardCombatState:
+    if "boss_card_combat" in st.session_state:
+        return st.session_state.boss_card_combat
+
+    reset_combat_flags()
+    player = st.session_state.player
+    level = st.session_state.game_map.current_node.level if st.session_state.get("game_map") and st.session_state.game_map.current_node else 1
+    enemy = Enemy(
+        name="语法巨像",
+        level=level,
+        hp=bs.boss_hp,
+        max_hp=bs.boss_max_hp,
+        attack=bs.boss_attack_max,
+        is_elite=True,
+        is_boss=True,
+        use_fixed_stats=True,
+        fixed_attack=bs.boss_attack_max,
+        fixed_timer=bs.boss_attack_interval,
+        attack_interval=bs.boss_attack_interval,
+    )
+    st.session_state.boss_card_combat = CardCombatState(
+        player=player,
+        enemy=enemy,
+        deck=player.deck.copy(),
+    )
+    return st.session_state.boss_card_combat
+
+
+def _enforce_boss_death_lock(bs: BossState, cs: CardCombatState) -> bool:
+    if cs.enemy.hp <= 0 and bs.quiz_asked < bs.death_lock_until_quiz_count:
+        cs.enemy.hp = 1
+        bs.boss_hp = 1
+        bs.death_lock_active = True
+        return True
+    if bs.quiz_asked >= bs.death_lock_until_quiz_count:
+        bs.death_lock_active = False
+    return False
+
+
+def _resolve_boss_enemy_turn(cs: CardCombatState, player: Player, bs: BossState):
+    events = []
+    if cs.bleed_turns > 0 and cs.bleed_damage > 0:
+        cs.enemy.take_damage(cs.bleed_damage)
+        cs.bleed_turns -= 1
+        events.append(CombatEvent(level="toast", text=f"🩸 放血造成 {cs.bleed_damage} 伤害", icon="🩸"))
+
+    interval = bs.frenzy_attack_interval if bs.frenzy_active else bs.boss_attack_interval
+    interval = max(1, interval)
+    attack_now = ((cs.turns + 1) % interval) == 0
+
+    if attack_now and cs.enemy.hp > 0:
+        low = bs.boss_attack_min + (bs.frenzy_attack_bonus if bs.frenzy_active else 0)
+        high = bs.boss_attack_max + (bs.frenzy_attack_bonus if bs.frenzy_active else 0)
+        damage = random.randint(low, high)
+        player.change_hp(-damage)
+        events.append(CombatEvent(level="warning", text=f"👹 首领攻击造成 {damage} 伤害"))
+
+    cs.current_card = None
+    cs.current_options = None
+    cs.turns += 1
+    bs.turn = cs.turns
+    cs.nunchaku_used = False
+    cs.extra_action_only_red = False
+    return events
+
+
+def _render_boss_skill_quiz(bs: BossState, cs: CardCombatState, check_death_callback: Callable) -> bool:
+    quiz = bs.active_quiz or {}
+    quiz_type = str(quiz.get("type", "vocab"))
+    label = "词汇破绽" if quiz_type == "vocab" else "首领终极技"
+    options = quiz.get("options") or []
+    if not options:
+        bs.active_quiz = None
+        return False
+
+    with st.container(border=True):
+        st.markdown(f"### {label}")
+        st.markdown(quiz.get("question", ""))
+        choice = st.radio(
+            "选择:",
+            options,
+            key=f"boss_skill_choice_{bs.quiz_asked}_{cs.turns}",
+        )
+        if st.button("提交答案", type="primary", key=f"boss_skill_submit_{bs.quiz_asked}_{cs.turns}"):
+            player = st.session_state.player
+            correct = choice == quiz.get("answer")
+            if quiz_type == "vocab":
+                if correct:
+                    damage = int(quiz.get("damage_to_boss", 20))
+                    cs.enemy.take_damage(damage)
+                    st.success(f"命中首领弱点，造成 {damage} 伤害")
+                else:
+                    st.warning("未能命中首领弱点")
+            else:
+                if correct:
+                    st.success("成功识破首领终极技")
+                else:
+                    damage = int(quiz.get("damage_to_player", 10))
+                    player.change_hp(-damage)
+                    st.error(f"终极技命中你，受到 {damage} 伤害")
+                    if check_death_callback():
+                        return True
+
+            bs.quiz_asked += 1
+            bs.active_quiz = None
+            bs.next_quiz_turn += bs.quiz_interval_turns
+            if _enforce_boss_death_lock(bs, cs):
+                st.warning("尚未读完其真名，首领强行维持形体！")
+
+            if bs.quiz_asked >= bs.death_lock_until_quiz_count and cs.enemy.hp > 0:
+                bs.frenzy_active = True
+                st.warning("首领进入狂暴收尾阶段")
+
+            if cs.enemy.hp <= 0 and bs.quiz_asked >= bs.death_lock_until_quiz_count:
+                cs.phase = CombatPhase.VICTORY
+                bs.phase = "victory"
+
+            _pause(0.6)
+            st.rerun()
+            return True
+    return False
+
+
+def _render_boss_card_test(cs: CardCombatState, bs: BossState, check_death_callback: Callable) -> bool:
+    player = st.session_state.player
+    card = cs.current_card
+    options = CombatEngine.get_quiz_options(cs, st.session_state)
+
+    st.markdown(f"### 🎴 {card.card_type.icon} {card.card_type.name_cn}卡")
+    answer = render_quiz_test(card, options)
+    if not answer:
+        return False
+
+    db = st.session_state.get("db")
+    player_id = st.session_state.db_player.get("id")
+    current_room = player.current_room
+    result = CombatEngine.process_answer(
+        cs=cs,
+        player=player,
+        card=card,
+        answer=answer,
+        db=db,
+        player_id=player_id,
+        current_room=current_room,
+        session_state=st.session_state,
+    )
+    render_combat_events(result.events)
+
+    if result.player_dead and check_death_callback():
+        return True
+
+    if result.enemy_dead and _enforce_boss_death_lock(bs, cs):
+        st.warning("尚未读完其真名，首领强行维持形体！")
+
+    if result.should_rerun:
+        st.rerun()
+        return True
+
+    if result.should_enemy_turn:
+        events = _resolve_boss_enemy_turn(cs, player, bs)
+        render_combat_events(events)
+        if player.is_dead() and check_death_callback():
+            return True
+        if cs.enemy.hp <= 0 and _enforce_boss_death_lock(bs, cs):
+            st.warning("尚未读完其真名，首领强行维持形体！")
+        if cs.enemy.hp <= 0 and bs.quiz_asked >= bs.death_lock_until_quiz_count:
+            cs.phase = CombatPhase.VICTORY
+            bs.phase = "victory"
+        _pause(0.6)
+        st.rerun()
+        return True
+
+    return False
+
+
 def render_boss(resolve_node_callback: Callable, check_death_callback: Callable):
-    """首领战"""
-    if 'boss_state' not in st.session_state:
-        player = st.session_state.player
-        boss_hp = max(100, len(player.deck) * 15)
+    """首领战：卡牌战斗 + 定期出题技能"""
+    player = st.session_state.player
+    if "boss_state" not in st.session_state:
+        boss_hp = max(120, len(player.deck) * 15)
         st.session_state.boss_state = BossState(boss_hp=boss_hp, boss_max_hp=boss_hp)
-    
-    bs = st.session_state.boss_state
-    
-    st.markdown("## 👹 语法巨像")
-    st.progress(max(0, bs.boss_hp / bs.boss_max_hp), f"生命: {bs.boss_hp}/{bs.boss_max_hp}")
-    
-    if bs.phase == 'loading':
-        # 优先使用预加载的结果
+
+    bs: BossState = st.session_state.boss_state
+
+    if bs.phase == "loading":
+        cache = st.session_state.get("boss_article_cache")
         preloaded = BossPreloader.get_result()
-        cache = st.session_state.get('boss_article_cache')
-        
-        if preloaded:
-            bs.article = preloaded.get('article')
-            bs.quizzes = preloaded.get('quizzes')
-            bs.phase = 'article'
-            BossPreloader.reset()
+        payload = cache or preloaded
+
+        if payload:
+            deck_words = [c.word for c in player.deck]
+            bs.article = _normalize_boss_article(payload.get("article"), deck_words)
+            bs.quizzes = _normalize_boss_quizzes(payload.get("quizzes"), deck_words)
+            bs.quiz_queue = _build_boss_quiz_queue(bs.quizzes)
+            bs.phase = "article"
+            if preloaded:
+                BossPreloader.reset()
             st.rerun()
-        elif cache:
-            bs.article = cache.get('article')
-            bs.quizzes = cache.get('quizzes')
-            bs.phase = 'article'
-            st.rerun()
-        elif st.session_state.get('boss_generation_status') == 'generating':
-            # 后台线程仍在生成中
-            st.info("🔄 首领故事正在创作中，请稍候...")
-            st.caption("AI 正在为你编写独一无二的冒险故事...")
-            _pause(2)
-            st.rerun()
-        elif BossPreloader.is_loading():
-            st.info("🔄 首领正在觉醒...")
+            return
+
+        if st.session_state.get("boss_generation_status") == "generating" or BossPreloader.is_loading():
+            st.info("首领正在觉醒，正在准备故事与题目...")
             _pause(1)
             st.rerun()
-        else:
-            # 没有预加载，使用当前卡组生成 (Mock)
-            with st.spinner("首领觉醒中..."):
-                player = st.session_state.player
-                words = [{"word": c.word, "meaning": c.meaning} for c in player.deck] if player.deck else []
-                bs.article = MockGenerator.generate_article(words)
-                bs.quizzes = MockGenerator.generate_quiz(words)
-                bs.phase = 'article'
-                st.rerun()
-    
-    elif bs.phase == 'article':
-        if bs.article:
-            with st.expander("📜 首领本体", expanded=True):
-                # v6.0 移除译文，仅展示英文文本
-                st.markdown("**英文原文**")
-                st.markdown(bs.article.get('article_english', ''), unsafe_allow_html=True)
-        
+            return
+
+        deck_words = [c.word for c in player.deck]
+        bs.article = _normalize_boss_article(None, deck_words)
+        bs.quizzes = _normalize_boss_quizzes(None, deck_words)
+        bs.quiz_queue = _build_boss_quiz_queue(bs.quizzes)
+        bs.phase = "article"
+        st.rerun()
+        return
+
+    if bs.phase == "article":
+        content = _boss_article_content(bs.article)
+        title = (bs.article or {}).get("title", "Boss Chronicle")
+        summary_cn = _boss_article_summary(bs.article)
+        st.markdown("## 👹 语法巨像")
+        with st.expander("首领本体", expanded=True):
+            st.markdown(f"### {title}")
+            st.markdown(content)
+            if summary_cn:
+                st.caption(summary_cn)
+            missing = (bs.article or {}).get("missing_words") or []
+            if missing:
+                st.caption(f"未覆盖词数: {len(missing)}")
+
         if st.button("⚔️ 准备战斗", type="primary"):
-            bs.phase = 'quiz'
+            bs.phase = "battle"
             bs.turn = 0
+            bs.vocab_idx = 0
+            bs.reading_idx = 0
+            bs.quiz_asked = 0
+            bs.next_quiz_turn = bs.quiz_interval_turns
+            bs.active_quiz = None
+            bs.death_lock_active = False
+            bs.frenzy_active = False
+            if "boss_card_combat" in st.session_state:
+                del st.session_state.boss_card_combat
             st.rerun()
-    
-    elif bs.phase == 'quiz':
-        quizzes = bs.quizzes.get('quizzes', []) if bs.quizzes else []
-        
-        # 狂暴机制：题目耗尽后逻辑
-        is_frenzy = bs.quiz_idx >= len(quizzes)
-        
-        if bs.boss_hp <= 0 and not is_frenzy:
-             # 这里理论上不应该发生，因为有斩杀保护
-             bs.phase = 'victory'
-             st.rerun()
-             return
+        return
 
-        # 渲染 Boss 状态
-        col_hp, col_armor = st.columns(2)
-        with col_hp:
-            st.progress(max(0, bs.boss_hp / bs.boss_max_hp), f"❤️ 生命: {bs.boss_hp}/{bs.boss_max_hp}")
-        with col_armor:
-            st.metric("🛡️ 首领护甲", bs.armor)
-
-        if not is_frenzy:
-            q = quizzes[bs.quiz_idx]
-            with st.container(border=True):
-                st.markdown(f"**{q['question']}**")
-                choice = st.radio("选择:", q['options'], key=f"boss_q_{bs.quiz_idx}")
-                
-                if st.button("✨ 释放", type="primary"):
-                    if choice == q['answer']:
-                        damage = 10  # v6.0 Fixed Damage
-                        # 检查斩杀保护：若题目未出完且 Boss 即将死亡，赋予 50 护甲
-                        if bs.boss_hp <= damage and bs.quiz_idx < len(quizzes) - 1:
-                            bs.armor += 50
-                            st.warning("🛡️ 首领感到威胁，生成了临时护甲！")
-                        
-                        # 扣除护甲或 HP
-                        if bs.armor > 0:
-                            absorbed = min(bs.armor, damage)
-                            bs.armor -= absorbed
-                            damage -= absorbed
-                        bs.boss_hp = max(0, bs.boss_hp - damage)
-                        if damage > 0:
-                            st.toast(f"💥 命中！造成 {damage} 伤害", icon="⚡")
-                        else:
-                            st.toast("🛡️ 伤害被护甲吸收", icon="🛡️")
-                        
-                        # 阶段保护：首次 HP < 100 时，立即获得 100 护甲
-                        if bs.boss_hp < 100 and not bs.triggered_100hp_shield:
-                            bs.armor += 100
-                            bs.triggered_100hp_shield = True
-                            st.error("⚠️ 首领进入二阶段，护甲激增！")
-                    else:
-                        st.session_state.player.change_hp(-25) # v6.0 Wrong Penalty
-                        st.error(f"❌ 正确答案: {q['answer']}")
-                        if check_death_callback():
-                            return
-                    
-                    bs.quiz_idx += 1
-                    bs.turn += 1
-                    _pause(1)
-                    st.rerun()
-        else:
-            # 狂暴期：题目耗尽
-            st.error("🔥 首领进入狂暴状态！题目已耗尽，护甲清零，每回合造成递增伤害！")
-            bs.armor = 0
-            
-            # 狂暴伤害计算：20, 30, 40... (每回合增加 10)
-            frenzy_turn = bs.turn - len(quizzes)
-            current_damage = 20 + (frenzy_turn * 10)
-            
-            st.markdown(f"### 👹 首领蓄势待发... (当前威胁: {current_damage})")
-            st.progress(max(0, bs.boss_hp / bs.boss_max_hp), f"生命: {bs.boss_hp}/{bs.boss_max_hp}")
-
-            if st.button("💪 用意志抵挡并反击（10伤害）", key="boss_frenzy_attack"):
-                bs.boss_hp -= 10
-                
-                # v6.0 Frenzy: 每回合攻击
-                st.session_state.player.change_hp(-current_damage)
-                st.toast(f"💥 首领狂暴攻击！造成 {current_damage} 伤害", icon="🔥")
-                
-                bs.turn += 1
-                if bs.boss_hp <= 0:
-                    bs.phase = 'victory'
-                
-                if check_death_callback():
-                    return
+    if bs.phase == "battle":
+        cs = _boss_init_combat_state(bs)
+        if cs.phase == CombatPhase.LOADING:
+            result = CombatEngine.start_battle(cs, player, st.session_state)
+            render_combat_events(result.events)
+            if result.should_rerun:
                 st.rerun()
-    
-    elif bs.phase == 'victory':
+            return
+
+        bs.boss_hp = cs.enemy.hp
+        bs.boss_max_hp = max(bs.boss_max_hp, cs.enemy.max_hp)
+        if cs.enemy.hp <= 0 and _enforce_boss_death_lock(bs, cs):
+            st.warning("尚未读完其真名，首领强行维持形体！")
+        if cs.enemy.hp <= 0 and bs.quiz_asked >= bs.death_lock_until_quiz_count:
+            bs.phase = "victory"
+            st.rerun()
+            return
+
+        if bs.quiz_asked >= bs.death_lock_until_quiz_count and cs.enemy.hp > 0:
+            bs.frenzy_active = True
+
+        st.markdown("## 👹 语法巨像")
+        st.progress(max(0, bs.boss_hp / bs.boss_max_hp), f"生命: {bs.boss_hp}/{bs.boss_max_hp}")
+        st.caption(
+            f"题目进度 {bs.quiz_asked}/{bs.death_lock_until_quiz_count} | 普攻间隔 {bs.boss_attack_interval} 回合"
+        )
+        if bs.frenzy_active:
+            st.warning("狂暴阶段：攻击频率提升")
+
+        if st.session_state.get("_end_turn_due_to_item"):
+            st.session_state._end_turn_due_to_item = False
+            events = _resolve_boss_enemy_turn(cs, player, bs)
+            render_combat_events(events)
+            if player.is_dead() and check_death_callback():
+                return
+            if cs.enemy.hp <= 0 and _enforce_boss_death_lock(bs, cs):
+                st.warning("尚未读完其真名，首领强行维持形体！")
+            if cs.enemy.hp <= 0 and bs.quiz_asked >= bs.death_lock_until_quiz_count:
+                bs.phase = "victory"
+            st.rerun()
+            return
+
+        if st.session_state.get("_player_stunned"):
+            st.session_state._player_stunned = False
+            st.warning("你被眩晕，跳过本回合")
+            events = _resolve_boss_enemy_turn(cs, player, bs)
+            render_combat_events(events)
+            if player.is_dead() and check_death_callback():
+                return
+            if cs.enemy.hp <= 0 and _enforce_boss_death_lock(bs, cs):
+                st.warning("尚未读完其真名，首领强行维持形体！")
+            _pause(0.6)
+            st.rerun()
+            return
+
+        if bs.active_quiz is None and cs.turns >= bs.next_quiz_turn and bs.quiz_asked < bs.death_lock_until_quiz_count:
+            if not bs.quiz_queue:
+                bs.quiz_queue = _build_boss_quiz_queue(bs.quizzes)
+            if bs.quiz_queue:
+                bs.active_quiz = bs.quiz_queue.pop(0)
+
+        if bs.active_quiz:
+            if _render_boss_skill_quiz(bs, cs, check_death_callback):
+                return
+            return
+
+        col_left, col_right = st.columns([1, 2])
+        with col_left:
+            render_enemy(cs.enemy)
+            st.markdown(f"**回合:** {cs.turns}")
+            if cs.next_card_multiplier and cs.next_card_multiplier > 1:
+                st.success(f"下一张数值 x{cs.next_card_multiplier}")
+        with col_right:
+            if cs.current_card:
+                if _render_boss_card_test(cs, bs, check_death_callback):
+                    return
+            else:
+                st.markdown("### 选择出牌")
+                st.info("正常出牌。每 2 回合会触发一次首领技能问答。")
+
+        st.divider()
+        if not cs.current_card:
+            draw_result = CombatEngine.auto_draw_if_empty(cs, st.session_state)
+            if draw_result.events:
+                render_combat_events(draw_result.events)
+            if draw_result.should_rerun:
+                st.rerun()
+                return
+
+            allowed_types = None
+            if cs.extra_action_only_red:
+                allowed_types = {CardType.RED_BERSERK}
+            clicked = render_hand(cs.hand, on_play=True, allowed_types=allowed_types)
+            if clicked is not None:
+                card = cs.hand[clicked]
+                play_result = CombatEngine.start_card_play(cs, player, card, st.session_state)
+                if play_result.events:
+                    render_combat_events(play_result.events)
+                if play_result.should_rerun:
+                    st.rerun()
+                    return
+        else:
+            st.caption(f"剩余手牌: {len(cs.hand)} | 弃牌堆: {len(cs.discard)}")
+        return
+
+    if bs.phase == "victory":
         st.balloons()
-        st.success("🏆 首领已被击败！")
-        if st.button("🎁 获取奖励（+100金币）", type="primary"):
-            st.session_state.player.add_gold(100)
-            st.session_state.player.advance_room()
+        st.success("首领已被击败")
+        if st.button("获取奖励（+100金币）", type="primary"):
+            player.add_gold(100)
+            player.advance_room()
+            if "boss_card_combat" in st.session_state:
+                del st.session_state.boss_card_combat
             resolve_node_callback()
 
 

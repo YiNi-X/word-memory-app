@@ -560,18 +560,26 @@ class BossState:
     boss_hp: int = 200
     boss_max_hp: int = 200
     armor: int = 0
-    phase: str = 'article'  # 'article', 'quiz', 'victory'
+    phase: str = "loading"  # loading, article, battle, victory
     article: dict = None
     quizzes: dict = None
-    quiz_idx: int = 0
+    quiz_queue: List[Dict[str, Any]] = field(default_factory=list)
+    active_quiz: Optional[Dict[str, Any]] = None
+    vocab_idx: int = 0
+    reading_idx: int = 0
+    quiz_asked: int = 0
+    next_quiz_turn: int = 2
+    quiz_interval_turns: int = 2
+    death_lock_until_quiz_count: int = 5
+    death_lock_active: bool = False
+    frenzy_active: bool = False
+    boss_attack_interval: int = 3
+    boss_attack_min: int = 12
+    boss_attack_max: int = 15
+    frenzy_attack_interval: int = 2
+    frenzy_attack_bonus: int = 3
     turn: int = 0
-    post_quiz_attack: int = 20 # 狂暴后基础伤害
-    triggered_100hp_shield: bool = False # 是否触发过 100HP 护盾
     api_error: Optional[str] = None
-    # v6.0 新增属性
-    armor: int = 0                        # Boss 护甲
-    triggered_100hp_shield: bool = False  # 是否已触发100血护甲
-    turn: int = 0                         # 回合计数
 
 
 @dataclass

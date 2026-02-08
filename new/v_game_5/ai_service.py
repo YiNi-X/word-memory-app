@@ -6,6 +6,7 @@ import re
 import sys
 import threading
 import logging
+import random
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
 
@@ -82,102 +83,201 @@ class CyberMind:
     
     def get_last_error(self) -> str:
         return self._last_error
-    
+
+    @staticmethod
+    def _extract_word_list(words: list) -> list:
+        word_list = []
+        seen = set()
+        for item in words or []:
+            if isinstance(item, dict):
+                word = str(item.get("word", "")).strip()
+            else:
+                word = str(item).strip()
+            if not word:
+                continue
+            key = word.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            word_list.append(word)
+        return word_list
+
+    @staticmethod
+    def normalize_article_payload(raw: dict, words_list: list) -> dict:
+        if not isinstance(raw, dict):
+            return None
+
+        title = str(raw.get("title") or "Boss Chronicle").strip()
+        content = str(raw.get("content") or raw.get("article_english") or "").strip()
+        summary_cn = str(raw.get("summary_cn") or raw.get("article_chinese") or "").strip()
+        if not content:
+            return None
+
+        missing_words = []
+        lowered_content = content.lower()
+        for word in words_list:
+            token = str(word).strip()
+            if not token:
+                continue
+            lower_token = token.lower()
+            plain_hit = re.search(rf"\b{re.escape(lower_token)}\b", lowered_content) is not None
+            bold_hit = re.search(rf"\*\*{re.escape(lower_token)}\*\*", lowered_content) is not None
+            if not plain_hit and not bold_hit:
+                missing_words.append(token)
+
+        return {
+            "title": title,
+            "content": content,
+            "summary_cn": summary_cn,
+            "all_target_words_used": len(missing_words) == 0,
+            "missing_words": missing_words,
+        }
+
+    @staticmethod
+    def normalize_quiz_payload(raw: dict) -> dict:
+        if not isinstance(raw, dict):
+            return None
+
+        vocab_attacks = []
+        boss_ultimates = []
+
+        if isinstance(raw.get("vocab_attacks"), list):
+            vocab_attacks.extend(raw.get("vocab_attacks"))
+        if isinstance(raw.get("boss_ultimates"), list):
+            boss_ultimates.extend(raw.get("boss_ultimates"))
+
+        legacy_quizzes = raw.get("quizzes")
+        if isinstance(legacy_quizzes, list):
+            for q in legacy_quizzes:
+                if not isinstance(q, dict):
+                    continue
+                vocab_attacks.append(
+                    {
+                        "type": "vocab",
+                        "question": q.get("question", ""),
+                        "options": q.get("options", []),
+                        "answer": q.get("answer", ""),
+                        "damage_to_boss": q.get("damage", 20),
+                    }
+                )
+
+        def _clean(items: list, quiz_type: str) -> list:
+            cleaned = []
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                question = str(item.get("question", "")).strip()
+                answer = str(item.get("answer", "")).strip()
+                options = item.get("options")
+                if not question or not answer or not isinstance(options, list) or len(options) < 2:
+                    continue
+                normalized = {
+                    "type": quiz_type,
+                    "question": question,
+                    "options": [str(opt) for opt in options],
+                    "answer": answer,
+                }
+                if quiz_type == "vocab":
+                    normalized["damage_to_boss"] = int(item.get("damage_to_boss", item.get("damage", 20)))
+                else:
+                    normalized["damage_to_player"] = int(item.get("damage_to_player", item.get("damage", 10)))
+                cleaned.append(normalized)
+            return cleaned
+
+        vocab_attacks = _clean(vocab_attacks, "vocab")
+        boss_ultimates = _clean(boss_ultimates, "reading")
+        if not vocab_attacks and not boss_ultimates:
+            return None
+        return {
+            "vocab_attacks": vocab_attacks,
+            "boss_ultimates": boss_ultimates,
+        }
+
     def generate_article(self, words: list, target_word_count: int = 200) -> dict:
-        """生成包含所有单词的 CET-6 难度文章"""
-        if not words:
+        """生成 Boss 文章（新协议）"""
+        word_list = self._extract_word_list(words)
+        if not word_list:
             return MockGenerator.generate_article([])
-        
-        if isinstance(words[0], dict):
-            word_list = [w.get('word', str(w)) for w in words]
-        else:
-            word_list = [str(w) for w in words]
-        
-        min_words = max(120, len(word_list) * 12)
-        max_words = max(180, len(word_list) * 18)
-        
-        prompt = f"""
-## 角色
-你是《经济学人》(The Economist) 资深专栏作家，擅长将专业词汇自然融入叙事。
 
-## 任务
-将以下单词列表融入一篇 **CET-6 阅读理解** 难度的短文。
+        prompt = """You are a sci-fi/fantasy novelist and a vocabulary expert.
+**Task**: Create a "Boss Level" short story/article based on the provided list of words.
 
-## ⚠️ 严禁（违反将导致失败）
-1. ❌ **禁止词汇堆砌**：
-   - 错误示例: "Words like temptation, trajectory, leverage are important."
-   - 错误示例: "Learners often encounter A, B, C, D, E."
-2. ❌ **禁止使用罗列句式**：
-   - 禁止: "such as", "including", "like A, B, C"
-   - 禁止: "terms like", "words such as"
+**Input Words**: {words_list}
 
-## ✅ 必须遵守
-1. **每个单词必须出现在不同的句子中**
-2. **单词必须是句子的核心成分**（主语/谓语/宾语/表语）
-3. **文章必须讲述一个完整的故事或论点**
-4. **使用多样句式**：定语从句、被动语态、倒装句
-5. **高亮格式**：`<span class='highlight-word'>word</span>`（包括时态变形）
+**Requirements**:
+1.  **Context**: Create a coherent, engaging story (Cyberpunk, Medieval, or Lovecraftian theme) that naturally incorporates ALL the input words.
+2.  **Length**: 200-300 words.
+3.  **Formatting**: You MUST wrap every input word used in the text with double asterisks, e.g., **serendipity**.
+4.  **Translation**: Provide a concise Chinese summary of the story.
 
-## 📝 优秀示例
-单词: ["temptation", "trajectory"]
-输出:
-> The <span class='highlight-word'>temptation</span> to prioritize short-term gains 
-> ultimately disrupted the startup's growth 
-> <span class='highlight-word'>trajectory</span>. This mistake served as a critical lesson.
+**Output Format**:
+Strictly return a valid JSON object:
+{
+    "title": "Title of the story",
+    "content": "The full story text with **highlighted** words...",
+    "summary_cn": "中文故事大意..."
+}"""
+        raw = self._call(prompt, json.dumps({"words_list": word_list}, ensure_ascii=False))
+        normalized = self.normalize_article_payload(raw, word_list)
+        if normalized:
+            return normalized
+        return MockGenerator.generate_article(word_list)
 
-## 篇幅
-{min_words} - {max_words} 词
-
-## 输出格式
-纯 JSON，不要 Markdown 代码块：
-{{
-    "article_english": "英文文章（高亮标记单词）",
-    "article_chinese": "中文翻译（信达雅，意译）"
-}}
-"""
-        result = self._call(prompt, f"单词列表: {word_list}")
-        return result if result else MockGenerator.generate_article(words)
-    
     def generate_quiz(self, words: list, article_context: str) -> dict:
-        """基于文章生成阅读理解题"""
-        if not words:
+        """生成 Boss 技能题（新协议）"""
+        word_list = self._extract_word_list(words)
+        if not word_list:
             return MockGenerator.generate_quiz([])
-        
-        if isinstance(words[0], dict):
-            word_list = [w.get('word', str(w)) for w in words]
-        else:
-            word_list = [str(w) for w in words]
-        
-        quiz_count = max(3, min(len(word_list) // 3, 6))
-        
-        prompt = f"""
-## 任务
-根据单词和文章，设计 {quiz_count} 道阅读理解题。
 
-## 题目要求
-1. **考察重点**：单词在**当前文章语境**下的含义（Contextual Meaning）。
-2. **选项设计**（重要）：
-   - 必须包含 4 个选项（A/B/C/D）。
-   - **所有选项必须是中文**。
-   - 正确选项：该单词在文中的含义。
-   - 干扰选项：该单词的其他含义，或形近词/意近词的含义。**严禁出现 "Something else", "None of the above" 等凑数选项。**
-3. **难度**：中等偏难，干扰项要有迷惑性。
+        prompt = """You are a Game Level Designer designing a Boss Fight for a vocabulary game.
+**Context**: The player is fighting a Boss represented by the article below.
+**Article**: {article_content}
+**Target Words**: {words_list}
 
-## 输出格式
-{{
-    "quizzes": [
-        {{
-            "question": "What is the meaning of 'word' in the context?",
-            "options": ["A. 正确含义", "B. 干扰含义1", "C. 干扰含义2", "D. 干扰含义3"],
-            "answer": "A. 正确含义",
-            "damage": 25,
-            "explanation": "解析：在文中..."
-        }}
+**Task**: Generate 2 types of battle questions (Quizzes).
+
+**Type 1: Weak Point Attack (Vocabulary Cloze)**
+* Select 3 distinct sentences from the article that contain one of the **Target Words**.
+* Replace the target word with "______".
+* Goal: Test if the player recognizes the word's usage context.
+* These are used for the player to deal damage.
+
+**Type 2: Boss Ultimate Move (Reading Comprehension)**
+* Create 2 difficult questions based on the *inference* or *main idea* of the article.
+* These answers should NOT be explicitly found in the text but require understanding.
+* These are "Boss Ultimate Attacks" that hurt the player if answered wrong.
+
+**Output Format**:
+Strictly return a valid JSON object:
+{
+    "vocab_attacks": [
+        {
+            "type": "vocab",
+            "question": "The sentence with ______ blank.",
+            "options": ["Correct Word", "Distractor 1", "Distractor 2", "Distractor 3"],
+            "answer": "Correct Word",
+            "damage_to_boss": 30
+        }
+    ],
+    "boss_ultimates": [
+        {
+            "type": "reading",
+            "question": "A deep reading comprehension question?",
+            "options": ["Correct Inference", "Wrong Inference 1", "Wrong Inference 2", "Wrong Inference 3"],
+            "answer": "Correct Inference",
+            "damage_to_player": 40
+        }
     ]
-}}
-"""
-        result = self._call(prompt, "请设计题目")
-        return result if result else MockGenerator.generate_quiz(words)
+}"""
+        payload = {
+            "article_content": article_context or "",
+            "words_list": word_list,
+        }
+        raw = self._call(prompt, json.dumps(payload, ensure_ascii=False))
+        normalized = self.normalize_quiz_payload(raw)
+        if normalized:
+            return normalized
+        return MockGenerator.generate_quiz(word_list)
     
     def analyze_words(self, words: list) -> dict:
         """分析单词，生成释义"""
@@ -201,114 +301,82 @@ class MockGenerator:
     
     @staticmethod
     def generate_article(words: list) -> dict:
-        """使用模板生成文章，将单词自然融入叙事"""
-        word_list = []
-        if words:
-            for w in words:
-                if isinstance(w, dict):
-                    word_list.append(w.get('word', str(w)))
-                else:
-                    word_list.append(str(w))
-        
+        """使用模板生成 Boss 文章（新协议）"""
+        word_list = CyberMind._extract_word_list(words)
         if not word_list:
-            word_list = ["challenge", "strategy", "innovation", "perspective", "outcome"]
-        
-        # 确保至少有5个词
-        while len(word_list) < 5:
-            word_list.append("approach")
-        
-        w = word_list[:5]
-        h = lambda x: f"<span class='highlight-word'>{x}</span>"
-        
+            word_list = ["signal", "rift", "guardian", "memory", "oath"]
+
+        selected = word_list[: min(10, len(word_list))]
+        fragments = []
+        for token in selected:
+            fragments.append(
+                f"In the final corridor, the crew traced **{token}** through rusted terminals and broken sigils."
+            )
+        content = (
+            "Neon rain poured over the tower while ancient bells rang below the reactor. "
+            + " ".join(fragments)
+            + " When the gate opened, every fragment aligned into a single command: survive the language storm."
+        )
+        missing = word_list[len(selected):]
         return {
-            "article_english": f"""
-The tech industry faces a profound <span class='highlight-word'>{w[0]}</span> that few executives anticipated. 
-When Sarah Chen took over as CEO, her first priority was to {h(w[1])} a complete restructuring of the company's R&D department.
-
-The board, initially skeptical of her unconventional methods, soon witnessed a remarkable transformation. 
-Her {h(w[2])} approach not only reduced costs by thirty percent but also fostered a culture of creativity 
-that had been absent for years. Critics who had dismissed her {h(w[3])} as naive were forced to reconsider 
-their assumptions.
-
-By the end of her first year, the results spoke for themselves: a forty percent increase in productivity 
-and a renewed sense of purpose among employees. The {h(w[4])} exceeded all expectations, 
-proving that bold leadership, when executed with precision, can reshape even the most entrenched organizations.
-""",
-            "article_chinese": f"""
-科技行业正面临一个鲜有高管预见到的深刻{w[0]}。当陈思雅接任CEO时，她的首要任务是对公司研发部门进行彻底的{w[1]}重组。
-
-董事会最初对她非传统的方法持怀疑态度，但很快便见证了令人瞩目的转变。她{w[2]}的方式不仅将成本降低了三成，
-还培育了一种多年来一直缺失的创新文化。那些曾嘲笑她{w[3]}太过天真的批评者不得不重新审视自己的判断。
-
-她上任第一年结束时，结果不言自明：生产力提升了四成，员工们重新找到了工作的意义。这个{w[4]}超出了所有人的预期，
-证明了大胆的领导力在精准执行时，能够重塑即便是最根深蒂固的组织。
-"""
+            "title": "Storm Above the Archive",
+            "content": content,
+            "summary_cn": "队伍在霓虹与古老符文交错的塔中追索线索，最终必须在语言风暴中击败守关者。",
+            "all_target_words_used": len(missing) == 0,
+            "missing_words": missing,
         }
     
     @staticmethod
     def generate_quiz(words: list) -> dict:
-        # 安全获取单词和释义
-        word_list = []
-        if words:
-            for w in words:
-                if isinstance(w, dict):
-                    word_list.append({
-                        "word": w.get('word', 'vocabulary'),
-                        "meaning": w.get('meaning', '词汇')
-                    })
-                else:
-                    word_list.append({"word": str(w), "meaning": "词汇"})
-        
+        word_list = CyberMind._extract_word_list(words)
         if not word_list:
-            word_list = [{"word": "vocabulary", "meaning": "词汇"}]
-        
-        quizzes = []
-        # 预定义一组干扰项库 (通用高频词义)
-        distractors_pool = [
-            "巨大的，宏伟的", "微小的，精致的", "迅速的，敏捷的", "缓慢的，迟钝的",
-            "困难的，艰巨的", "容易的，简单的", "积极的，乐观的", "消极的，悲观的",
-            "永久的，持久的", "暂时的，短暂的", "准确的，精确的", "模糊的，不清楚的",
-            "美丽的，迷人的", "丑陋的，难看的", "重要的，关键的", "琐碎的，不重要的"
-        ]
-        
-        quizzes = []
-        for i, w in enumerate(word_list[:min(len(word_list), 5)]): # 最多生成5题
-            correct_meaning = w['meaning']
-            
-            # 构建干扰项
-            current_distractors = random.sample(distractors_pool, 3)
-            # 确保干扰项和正确答案不重复 (简单检查)
-            current_distractors = [d for d in current_distractors if d != correct_meaning]
-            while len(current_distractors) < 3:
-                current_distractors.append("其他的含义")
-                
-            options_raw = [correct_meaning] + current_distractors[:3]
-            random.shuffle(options_raw)
-            
-            # 找到正确答案的新索引
-            correct_idx = options_raw.index(correct_meaning)
-            letters = ['A', 'B', 'C', 'D']
-            
-            formatted_options = [f"{letters[j]}. {opt}" for j, opt in enumerate(options_raw)]
-            answer_str = formatted_options[correct_idx]
-            
-            quizzes.append({
-                "question": f"What is the meaning of '{w['word']}' in the context?",
-                "options": formatted_options,
-                "answer": answer_str,
-                "damage": 20,
-                "explanation": f"在文章语境中，{w['word']} 意为 {w['meaning']}。"
-            })
-        
-        return {"quizzes": quizzes if quizzes else [
+            word_list = ["vocabulary", "context", "inference"]
+
+        vocab_attacks = []
+        for token in word_list[:3]:
+            options = [token, "horizon", "archive", "entropy"]
+            random.shuffle(options)
+            vocab_attacks.append(
+                {
+                    "type": "vocab",
+                    "question": f"The sentence with ______ should be completed by which word? ({token})",
+                    "options": options,
+                    "answer": token,
+                    "damage_to_boss": 30,
+                }
+            )
+
+        boss_ultimates = [
             {
-                "question": "Which word best describes the text?",
-                "options": ["A. Learning", "B. Playing", "C. Sleeping", "D. Running"],
-                "answer": "A. Learning",
-                "damage": 20,
-                "explanation": "文章主要讨论学习。"
-            }
-        ]}
+                "type": "reading",
+                "question": "What is the central conflict of the story?",
+                "options": [
+                    "Surviving a language-encoded threat",
+                    "Building a marketplace",
+                    "Planning a vacation",
+                    "Repairing a simple tool",
+                ],
+                "answer": "Surviving a language-encoded threat",
+                "damage_to_player": 40,
+            },
+            {
+                "type": "reading",
+                "question": "Why does the narrator keep tracing symbols?",
+                "options": [
+                    "To unlock the final command",
+                    "To decorate the corridor",
+                    "To avoid all conflict",
+                    "To map a river route",
+                ],
+                "answer": "To unlock the final command",
+                "damage_to_player": 40,
+            },
+        ]
+
+        return {
+            "vocab_attacks": vocab_attacks,
+            "boss_ultimates": boss_ultimates,
+        }
 
 
 # ==========================================
@@ -349,9 +417,10 @@ class BossPreloader:
                     article = MockGenerator.generate_article(words)
                 
                 # 生成题目
+                article_content = article.get("content") or article.get("article_english") or ""
                 quizzes = _ai.generate_quiz(
                     words, 
-                    article.get('article_english', '')
+                    article_content
                 )
                 if not quizzes:
                     quizzes = MockGenerator.generate_quiz(words)

@@ -261,6 +261,16 @@ class CardCombatState:
     turns: int = 0
     next_card_multiplier: int = 1  # 下张卡效果倍率
     extra_actions: int = 0  # 额外出牌次数（本回合）
+    last_card_type: Optional[CardType] = None
+    red_streak: int = 0
+    blue_streak: int = 0
+    color_sequence: List[CardType] = field(default_factory=list)
+    agang_active: bool = False
+    agang_red_count: int = 0
+    bleed_damage: int = 0
+    bleed_turns: int = 0
+    nunchaku_used: bool = False
+    extra_action_only_red: bool = False
     
     def __post_init__(self):
         if self.enemy is None:
@@ -420,42 +430,71 @@ class Player:
     blue_card_heal_buff: bool = False # 蓝卡回血 Buff (兼容旧代码，新逻辑在卡牌上)
     gold_card_purchased: bool = False # 是否已购买金卡 (兼容旧字段)
     
-    def change_hp(self, amount: int):
-        # v6.0 贪婪之理：受到伤害翻倍
+    def change_hp(self, amount: int, notify=None):
+        def emit(level: str, text: str, icon: str = None):
+            if notify:
+                notify(level, text, icon)
+                return
+            if level == "success":
+                st.success(text)
+            elif level == "warning":
+                st.warning(text)
+            elif level == "error":
+                st.error(text)
+            else:
+                st.toast(text, icon=icon)
+
+        if "MONKEY_PAW" in self.relics and self.max_hp > 50:
+            self.max_hp = 50
+            self.hp = min(self.hp, self.max_hp)
+        # v6.0 ???????????
         if amount < 0 and st.session_state.get("_greedy_curse", False):
             amount *= 2
-            st.toast("⚠️ 贪婪反噬！受到伤害翻倍", icon="🤑")
+            emit("warning", "\u8d2a\u5a6a\u4e4b\u7406\uff1a\u53d7\u5230\u4f24\u5bb3\u7ffb\u500d")
 
         if amount > 0 and "PAIN_ARMOR" in self.relics:
             amount = int(amount * 0.5)
 
-        # 护甲优先逻辑
+        # ??????
         if amount < 0 and self.armor > 0:
             absorbed = min(self.armor, -amount)
             self.armor -= absorbed
             amount += absorbed
             if absorbed > 0:
-                st.toast(f"🛡️ 护甲吸收 {absorbed}", icon="🛡️")
-        
+                emit("toast", f"\u62a4\u7532\u5438\u6536 {absorbed}")
+
+        if amount < 0 and "MONKEY_PAW" in self.relics:
+            if self.hp + amount <= 0 and not st.session_state.get("_monkey_paw_used", False):
+                st.session_state._monkey_paw_used = True
+                self.hp = 1
+                emit("warning", "\u7334\u722a\u62b5\u5fa1\u81f4\u547d\u4f24\u5bb3")
+                return
+
         self.hp += amount
-        # 锁定最大 HP 逻辑：change_hp 只能在 [0, max_hp] 波动
+        # ???? HP ???change_hp ??? [0, max_hp] ??
         self.hp = max(0, min(self.hp, self.max_hp))
-        
+
         if self.hp <= 0:
-            st.error("💀 你由于体力耗尽倒下了...")
+            emit("error", "\u4f60\u5012\u4e0b\u4e86...")
         elif amount < 0:
-            st.toast(f"💔 生命 {amount}", icon="🩸")
+            emit("warning", f"\u751f\u547d {amount}")
         elif amount > 0:
-            st.toast(f"💚 生命 +{amount}", icon="🌿")
-    
-    def add_armor(self, amount: int):
+            emit("success", f"\u751f\u547d +{amount}")
+
+    def add_armor(self, amount: int, notify=None):
         self.armor += amount
-        st.toast(f"🛡️ 护甲 +{amount}", icon="🛡️")
-    
-    def add_gold(self, amount: int):
+        if notify:
+            notify("toast", f"\u62a4\u7532 +{amount}")
+        else:
+            st.toast(f"\u62a4\u7532 +{amount}")
+
+    def add_gold(self, amount: int, notify=None):
         self.gold += amount
-        st.toast(f"💰 金币 +{amount}")
-    
+        if notify:
+            notify("toast", f"\u91d1\u5e01 +{amount}")
+        else:
+            st.toast(f"\u91d1\u5e01 +{amount}")
+
     def is_dead(self) -> bool:
         return self.hp <= 0
     
@@ -467,6 +506,9 @@ class Player:
     
     def add_card_to_deck(self, card: WordCard):
         """添加卡牌到卡组"""
+        if "UNDYING_CURSE" in self.relics:
+            card.is_blackened = True
+            card.temp_level = "black"
         self.deck.append(card)
 
 

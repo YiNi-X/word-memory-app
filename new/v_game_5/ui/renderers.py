@@ -18,14 +18,30 @@ from models import (
     CardType, WordCard, Enemy, CombatPhase, CardCombatState, CARD_STATS
 )
 from state_utils import reset_combat_flags
-from config import HAND_SIZE, ENEMY_HP_BASE, ENEMY_ATTACK, ENEMY_ACTION_TIMER, UI_PAUSE_EXTRA
+from config import HAND_SIZE, ENEMY_HP_BASE, ENEMY_ATTACK, ENEMY_ACTION_TIMER, UI_PAUSE_EXTRA, SHOP_PRICE_SURCHARGE
 from registries import EventRegistry, ShopRegistry
 from systems.trigger_bus import TriggerBus, TriggerContext
+from systems.combat_engine import CombatEngine
 from ai_service import CyberMind, MockGenerator, BossPreloader
 from ui.components import (
     play_audio, render_word_card, render_card_slot, render_enemy,
     render_hand, render_learning_popup, render_quiz_test
 )
+
+
+def render_combat_events(events: list):
+    for ev in events:
+        level = getattr(ev, "level", "toast")
+        text = getattr(ev, "text", "")
+        icon = getattr(ev, "icon", None)
+        if level == "success":
+            st.success(text)
+        elif level == "warning":
+            st.warning(text)
+        elif level == "error":
+            st.error(text)
+        else:
+            st.toast(text, icon=icon)
 
 
 def _pause(seconds: float):
@@ -338,82 +354,47 @@ def render_combat(resolve_node_callback: Callable, check_death_callback: Callabl
     
     # v6.0 直接进入战斗，不再有 Loading 阶段
     if cs.phase == CombatPhase.LOADING:
-        cs.start_battle()
-        TriggerBus.trigger("on_combat_start", TriggerContext(player=player, enemy=cs.enemy, combat_state=cs))
-        cs.ensure_black_in_hand()
-        # 初始填充手牌
-        while len(cs.hand) < cs.hand_size:
-            cs.draw_card()
-        st.rerun()
-        return
+        result = CombatEngine.start_battle(cs, player, st.session_state)
+        render_combat_events(result.events)
+        if result.should_rerun:
+            st.rerun()
+            return
 
     if cs.phase == CombatPhase.BATTLE:
         _render_battle_phase(cs, resolve_node_callback, check_death_callback)
     elif cs.phase == CombatPhase.VICTORY:
         st.balloons()
-        
-        # v6.0 卡牌奖励选择
+
         is_elite = cs.enemy.is_elite
-        pick_count = 2 if is_elite else 1
-        
+
+        if is_elite and st.session_state.get("elite_relic_pending"):
+            _render_elite_relic_reward(cs, resolve_node_callback)
+            return
+
         # 记录战斗完成
         game_map = st.session_state.get('game_map')
         if game_map and 'combat_recorded' not in st.session_state:
             game_map.record_combat_completed(NodeType.ELITE if is_elite else NodeType.COMBAT)
             st.session_state.combat_recorded = True
-        
-        # 生成奖励卡牌选项
-        if 'reward_cards' not in st.session_state:
-            word_pool = st.session_state.get('game_word_pool') or []
-            player_deck_words = {c.word for c in st.session_state.player.deck}
-            available_cards = [c for c in word_pool if c.word not in player_deck_words]
-            
-            if len(available_cards) >= 3:
-                st.session_state.reward_cards = random.sample(available_cards, 3)
+
+        if not st.session_state.get("combat_victory_rewarded"):
+            reward_count = 2 if is_elite else 1
+            reward_cards = _take_cards_from_pool(reward_count, prefer_red_only=True)
+            if reward_cards:
+                for card in reward_cards:
+                    st.session_state.player.add_card_to_deck(card)
+                st.toast(f"🎴 获得 {len(reward_cards)} 张红卡！", icon="🟥")
             else:
-                st.session_state.reward_cards = available_cards
-            st.session_state.selected_rewards = []
-        
-        reward_cards = st.session_state.reward_cards
-        selected = st.session_state.selected_rewards
-        
-        if reward_cards and len(selected) < pick_count:
-            st.subheader(f"🎴 选择卡牌奖励 ({len(selected)}/{pick_count})")
-            st.caption("精英怪可选 2 张，普通怪可选 1 张")
-            
-            cols = st.columns(len(reward_cards))
-            for i, card in enumerate(reward_cards):
-                with cols[i]:
-                    already_selected = card in selected
-                    with st.container(border=True):
-                        st.markdown(f"### {card.card_type.icon} {card.word}")
-                        st.caption(card.meaning)
-                        if already_selected:
-                            st.success("✓ 已选择")
-                        elif st.button("选择", key=f"reward_{i}"):
-                            selected.append(card)
-                            st.rerun()
-            
-            if len(selected) >= pick_count:
-                if st.button("✅ 确认选择", type="primary"):
-                    for card in selected:
-                        st.session_state.player.add_card_to_deck(card)
-                    pool = st.session_state.get('game_word_pool', [])
-                    selected_words = {c.word for c in selected}
-                    st.session_state.game_word_pool = [c for c in pool if c.word not in selected_words]
-                    st.toast(f"🎴 获得 {len(selected)} 张卡牌！", icon="✨")
-                    # 清理奖励状态
-                    del st.session_state.reward_cards
-                    del st.session_state.selected_rewards
-                    if 'combat_recorded' in st.session_state:
-                        del st.session_state.combat_recorded
-                    _complete_combat_victory(cs, resolve_node_callback)
-        else:
-            # 无可用奖励卡牌
-            if st.button("🎁 获取战利品（+30金币）", type="primary"):
-                if 'combat_recorded' in st.session_state:
-                    del st.session_state.combat_recorded
-                _complete_combat_victory(cs, resolve_node_callback)
+                st.info("词池中没有可用红卡")
+            st.session_state.combat_victory_rewarded = True
+
+            if is_elite:
+                st.session_state.elite_relic_pending = True
+                st.rerun()
+                return
+
+        if st.button("继续", type="primary", use_container_width=True):
+            _complete_combat_victory(cs, resolve_node_callback)
 
 
 def _complete_combat_victory(cs: CardCombatState, resolve_node_callback: Callable):
@@ -441,11 +422,80 @@ def _complete_combat_victory(cs: CardCombatState, resolve_node_callback: Callabl
         used_words.update(c.word for c in st.session_state.card_combat.hand if hasattr(c, 'word'))
         st.session_state._last_used_cards = used_words
         del st.session_state.card_combat
+
+    for key in ("combat_victory_rewarded", "reward_cards", "selected_rewards", "combat_recorded"):
+        if key in st.session_state:
+            del st.session_state[key]
     
     # 重置护甲
     st.session_state.player.armor = 0
     
     resolve_node_callback()
+
+
+def _apply_relic_on_gain(player, relic_id: str):
+    if relic_id == "UNDYING_CURSE":
+        for c in player.deck:
+            c.is_blackened = True
+            c.temp_level = "black"
+    if relic_id == "MONKEY_PAW":
+        if player.max_hp > 50:
+            player.max_hp = 50
+            player.hp = min(player.hp, player.max_hp)
+
+
+def _render_elite_relic_reward(cs: CardCombatState, resolve_node_callback: Callable):
+    """精英怪圣遗物奖励"""
+    from registries import RelicRegistry
+
+    player = st.session_state.player
+    st.subheader("🏵️ 精英圣遗物奖励")
+    st.caption("从 3 个圣遗物中选择 1 个，可跳过")
+
+    if 'elite_relic_choices' not in st.session_state:
+        pool = [rid for rid in RelicRegistry.get_pool("high") if rid not in player.relics]
+        if not pool:
+            st.info("暂无可用圣遗物")
+            _clear_elite_relic_state()
+            _complete_combat_victory(cs, resolve_node_callback)
+            return
+        st.session_state.elite_relic_choices = random.sample(pool, min(3, len(pool)))
+
+    choices = st.session_state.get('elite_relic_choices', [])
+    if not choices:
+        st.info("暂无可用圣遗物")
+        _clear_elite_relic_state()
+        _complete_combat_victory(cs, resolve_node_callback)
+        return
+
+    cols = st.columns(len(choices))
+    for i, rid in enumerate(choices):
+        relic = RelicRegistry.get(rid)
+        if not relic:
+            continue
+        with cols[i]:
+            with st.container(border=True):
+                st.markdown(f"### {relic.icon} {relic.name}")
+                st.caption(relic.description)
+                if st.button("选择", key=f"elite_relic_{rid}"):
+                    player.relics.append(rid)
+                    _apply_relic_on_gain(player, rid)
+                    st.toast("获得圣遗物")
+                    _clear_elite_relic_state()
+                    _complete_combat_victory(cs, resolve_node_callback)
+                    return
+
+    if st.button("跳过", use_container_width=True):
+        _clear_elite_relic_state()
+        _complete_combat_victory(cs, resolve_node_callback)
+        return
+
+
+def _clear_elite_relic_state():
+    if 'elite_relic_pending' in st.session_state:
+        del st.session_state.elite_relic_pending
+    if 'elite_relic_choices' in st.session_state:
+        del st.session_state.elite_relic_choices
 
 
 def _take_cards_from_pool(count: int, prefer_red_only: bool = False) -> list:
@@ -479,19 +529,12 @@ def _take_cards_from_pool(count: int, prefer_red_only: bool = False) -> list:
 def _grant_red_card_from_pool(reason: str = "") -> bool:
     cards = _take_cards_from_pool(1, prefer_red_only=True)
     if not cards:
+        st.info("词池中没有可用红卡")
         return False
     card = cards[0]
     st.session_state.player.add_card_to_deck(card)
     st.toast(f"获得红卡（{reason}）") if reason else st.toast("获得红卡")
     return True
-
-
-def _count_upgrade_for_red_reward():
-    counter = st.session_state.get("upgrade_red_counter", 0) + 1
-    if counter >= 2:
-        _grant_red_card_from_pool("升级累计")
-        counter = max(0, counter - 2)
-    st.session_state.upgrade_red_counter = counter
 
 
 def _render_preparation():
@@ -607,24 +650,28 @@ def _render_battle_phase(cs: CardCombatState, resolve_node_callback, check_death
     player = st.session_state.player
 
     if st.session_state.get("_end_turn_due_to_item"):
-        st.session_state._end_turn_due_to_item = False
-        _resolve_enemy_turn(cs, player, check_death_callback)
+        result = CombatEngine.resolve_enemy_turn(cs, player, st.session_state)
+        render_combat_events(result.events)
+        if result.player_dead and check_death_callback():
+            return
+        if result.enemy_dead:
+            CombatEngine.advance_phase_if_victory(cs)
+        st.rerun()
         return
     
     # 检查是否被眩晕
     if st.session_state.get('_player_stunned'):
-        st.warning("💥 你被眩晕了，跳过本回合！")
-        st.session_state._player_stunned = False
-        
-        # 敌人攻击（眩晕回合敌人不攻击，但伤害递增）
-        intent = cs.enemy.tick()
-        cs.turns += 1
+        result = CombatEngine.resolve_stun_turn(cs, player, st.session_state)
+        render_combat_events(result.events)
+        if result.player_dead and check_death_callback():
+            return
+        if result.enemy_dead:
+            CombatEngine.advance_phase_if_victory(cs)
         _pause(1)
         st.rerun()
         return
     
-    if cs.enemy.is_dead():
-        cs.phase = CombatPhase.VICTORY
+    if CombatEngine.advance_phase_if_victory(cs):
         st.rerun()
         return
     
@@ -645,235 +692,79 @@ def _render_battle_phase(cs: CardCombatState, resolve_node_callback, check_death
     
     st.divider()
     if not cs.current_card:
-        # 手牌为空时自动抽牌
-        if len(cs.hand) == 0:
-            drawn = cs.draw_card()
-            if drawn:
-                st.toast("♻️ 弃牌堆已洗回，自动抽牌！", icon="🔄")
-                st.rerun()
-            else:
-                st.warning("⚠️ 无牌可抽！战斗陷入僵局...")
-        
-        clicked = render_hand(cs.hand, on_play=True)
+        draw_result = CombatEngine.auto_draw_if_empty(cs, st.session_state)
+        if draw_result.events:
+            render_combat_events(draw_result.events)
+        if draw_result.should_rerun:
+            st.rerun()
+            return
+
+        allowed_types = None
+        if cs.extra_action_only_red:
+            allowed_types = {CardType.RED_BERSERK}
+        clicked = render_hand(cs.hand, on_play=True, allowed_types=allowed_types)
         if clicked is not None:
             card = cs.hand[clicked]
-            removed = cs.play_card(card)
-            if removed:
-                _grant_red_card_from_pool("移除")
-            if len(cs.hand) == 0:
-                if (
-                    card.card_type == CardType.RED_BERSERK
-                    and "START_BURNING_BLOOD" in getattr(player, "relics", [])
-                    and player.hp < 50
-                ):
-                    cs.draw_with_preference([CardType.RED_BERSERK], 2)
-                elif card.card_type == CardType.BLUE_HYBRID and "PAIN_ARMOR" in getattr(player, "relics", []):
-                    drawn = []
-                    drawn += cs.draw_with_preference([CardType.RED_BERSERK], 1)
-                    drawn += cs.draw_with_preference([CardType.BLUE_HYBRID], 1)
-                    if len(drawn) < 2:
-                        cs.draw_with_preference([CardType.RED_BERSERK, CardType.BLUE_HYBRID], 2 - len(drawn))
-            all_words = [c.word for c in cs.word_pool]
-            options = random.sample([w for w in all_words if w != card.word], min(3, len(all_words) - 1))
-            options.append(card.word)
-            random.shuffle(options)
-            cs.current_options = options
-            st.rerun()
+            play_result = CombatEngine.start_card_play(cs, player, card, st.session_state)
+            if play_result.events:
+                render_combat_events(play_result.events)
+            if play_result.should_rerun:
+                st.rerun()
+                return
     else:
         st.caption(f"剩余手牌: {len(cs.hand)} | 弃牌堆: {len(cs.discard)}")
 
 
 def _render_card_test(cs: CardCombatState, player, check_death_callback):
-    """出牌测试"""
+    """Card test"""
     card = cs.current_card
-    options = cs.current_options
+    options = CombatEngine.get_quiz_options(cs, st.session_state)
 
-    # 使用提示道具：移除错误选项
-    if st.session_state.get('_item_hint', 0) and options:
-        wrong_opts = [o for o in options if o != card.word]
-        if wrong_opts:
-            remove_count = 2 if len(wrong_opts) >= 2 else 1
-            to_remove = random.sample(wrong_opts, remove_count)
-            options = [o for o in options if o not in to_remove]
-            cs.current_options = options
-        st.session_state._item_hint = max(0, st.session_state.get("_item_hint", 0) - 1)
-    
     st.markdown(f"### 🎴 {card.card_type.icon} {card.card_type.name_cn}卡")
-    
+
     answer = render_quiz_test(card, options)
-    
+
     if answer:
-        pre_type = card.card_type
-        correct = answer == card.word
-        word = card.word
-        
         db = st.session_state.get('db')
         player_id = st.session_state.db_player.get('id')
         current_room = player.current_room
-        
-        # 更新进度
-        result = None
-        if db and player_id:
-            result = db.update_word_progress(player_id, card.word, correct, current_room)
-            if result and result.get('upgraded'):
-                st.success(f"⬆️ {card.word} 升级!")
-                new_tier = result.get("new_tier")
-                if new_tier is not None:
-                    card.tier = new_tier
-                    if not card.is_blackened:
-                        card.temp_level = None
-                    for c in player.deck:
-                        if c.word == card.word:
-                            c.tier = new_tier
-                            if not c.is_blackened:
-                                c.temp_level = None
-        db = st.session_state.get('db')
-        player_id = st.session_state.db_player.get('id')
-        
-        if correct:
-            st.success(f"✅ 正确！")
-            _apply_card_effect(card, cs, player, correct=True)
-            TriggerBus.trigger("on_correct_answer", TriggerContext(player=player, enemy=cs.enemy, card=card, combat_state=cs))
 
-            if card.is_blackened or card.card_type == CardType.BLACK_CURSE:
-                black_streak = st.session_state.get("black_correct_streak", {})
-                black_streak[word] = black_streak.get(word, 0) + 1
-                if black_streak[word] >= 5:
-                    if card in player.deck:
-                        player.deck.remove(card)
-                    cs._remove_from_all_piles(card)
-                    cs.word_pool = [c for c in cs.word_pool if c.word != word]
-                    del black_streak[word]
-                    st.success(f"✨ 黑卡净化成功，已从本局移除：{word}")
-                    cs.current_card = None
-                    cs.current_options = None
-                st.session_state.black_correct_streak = black_streak
-            
-            # v6.0 正确清空错误计数
-            card.wrong_streak = 0
+        result = CombatEngine.process_answer(
+            cs=cs,
+            player=player,
+            card=card,
+            answer=answer,
+            db=db,
+            player_id=player_id,
+            current_room=current_room,
+            session_state=st.session_state,
+        )
+        render_combat_events(result.events)
 
-            if result and result.get('upgraded'):
-                _count_upgrade_for_red_reward()
-            
-            # 局内熟练度追踪
-            from config import RED_TO_BLUE_UPGRADE_THRESHOLD, BLUE_TO_GOLD_UPGRADE_THRESHOLD
-            streak = st.session_state.in_game_streak
-            streak[word] = streak.get(word, 0) + 1
-            
-            # 达到阈值则升级卡牌 (temp_level)
-            if pre_type == CardType.RED_BERSERK:
-                if streak[word] >= RED_TO_BLUE_UPGRADE_THRESHOLD:
-                    card.temp_level = "blue"
-                    st.toast(f"升级为蓝卡：{word}", icon="🟦")
-                    _count_upgrade_for_red_reward()
-                    streak[word] = 0  # 重置计数
-            elif pre_type == CardType.BLUE_HYBRID:
-                if streak[word] >= BLUE_TO_GOLD_UPGRADE_THRESHOLD:
-                    card.temp_level = "gold"
-                    st.toast(f"升级为金卡：{word}", icon="🟨")
-                    _count_upgrade_for_red_reward()
-                    streak[word] = 0  # 重置计数
-        else:
-            st.error(f"❌ 错误！正确答案: {card.word}")
-            ctx = TriggerContext(player=player, enemy=cs.enemy, card=card, combat_state=cs)
-            TriggerBus.trigger("on_wrong_answer", ctx)
-            if not ctx.data.get('negate_wrong_penalty'):
-                _apply_card_effect(card, cs, player, correct=False)
+        if result.player_dead and check_death_callback():
+            return
 
-            if card.is_blackened or card.card_type == CardType.BLACK_CURSE:
-                black_streak = st.session_state.get("black_correct_streak", {})
-                black_streak[word] = 0
-                st.session_state.black_correct_streak = black_streak
-            
-            # ==========================================
-            # v6.0 精简降级路径：金(1) -> 蓝(2) -> 红(3) -> 黑
-            # ==========================================
-            if not card.is_blackened:
-                card.wrong_streak += 1
-                
-                ctype = card.card_type
-                if ctype == CardType.GOLD_SUPPORT and card.wrong_streak >= 1:
-                    card.temp_level = "blue"
-                    st.warning("⬇️ 金卡遗忘！降级为蓝卡")
-                    card.wrong_streak = 0
-                elif ctype == CardType.BLUE_HYBRID and card.wrong_streak >= 2:
-                    card.temp_level = "red"
-                    st.warning("⬇️ 蓝卡遗忘！降级为红卡")
-                    card.wrong_streak = 0
-                elif ctype == CardType.RED_BERSERK and card.wrong_streak >= 2:
-                    card.is_blackened = True
-                    card.temp_level = "black"
-                    st.error("💀 红卡黑化！变为诅咒卡")
-                    card.wrong_streak = 0
-            
-            # 精英怪眩晕机制：1/3 概率
-            if cs.enemy.is_elite and random.random() < 0.33:
-                st.warning("💫 你被眩晕了！跳过一回合")
-                st.session_state._player_stunned = True
-            
-            # 错误时重置连击
-            if card.word in st.session_state.in_game_streak:
-                st.session_state.in_game_streak[card.word] = 0
-            
-            if check_death_callback():
-                return
-        
-        if cs.extra_actions > 0:
-            cs.extra_actions -= 1
-            cs.current_card = None
-            cs.current_options = None
+        if result.enemy_dead:
+            CombatEngine.advance_phase_if_victory(cs)
+
+        if result.should_rerun:
             st.rerun()
             return
-        _resolve_enemy_turn(cs, player, check_death_callback)
 
-
-def _resolve_enemy_turn(cs: CardCombatState, player, check_death_callback):
-    intent = cs.enemy.tick()
-    if intent == "attack":
-        damage = cs.enemy.attack
-        if st.session_state.get('_item_shield', False):
-            st.session_state._item_shield = False
-            damage = 0
-            st.toast("🛡️ 护盾抵消了本次攻击", icon="🛡️")
-        else:
-            reduce = st.session_state.get('_item_damage_reduce', 0)
-            if reduce:
-                damage = max(0, damage - reduce)
-                st.session_state._item_damage_reduce = 0
-        if damage > 0:
-            player.change_hp(-damage)
-            st.warning(f"👹 敌人攻击！造成 {damage} 伤害")
-        else:
-            st.toast("🛡️ 本次伤害被抵消", icon="🛡️")
-        if check_death_callback():
+        if result.should_enemy_turn:
+            if cs.enemy.is_dead():
+                CombatEngine.advance_phase_if_victory(cs)
+                st.rerun()
+                return
+            turn_result = CombatEngine.resolve_enemy_turn(cs, player, st.session_state)
+            render_combat_events(turn_result.events)
+            if turn_result.player_dead and check_death_callback():
+                return
+            if turn_result.enemy_dead:
+                CombatEngine.advance_phase_if_victory(cs)
+            _pause(1)
+            st.rerun()
             return
-
-    cs.current_card = None
-    cs.current_options = None
-    cs.turns += 1
-    # v6.0 护甲每局重置，不再自动清零（玩家需要手动获得护甲）
-    # 这里的 player.reset_block() 应该被移除，因为 Player 类现在有 armor
-
-    _pause(1)
-    st.rerun()
-
-
-def _apply_card_effect(card: WordCard, cs: CardCombatState, player, correct: bool):
-    """应用卡牌效果 (使用效果注册表)"""
-    from registries import CardEffectRegistry, EffectContext
-    
-    # 创建效果上下文
-    ctx = EffectContext(
-        player=player,
-        enemy=cs.enemy,
-        cs=cs,
-        card=card,
-        st=st
-    )
-    
-    # 通过注册表执行效果
-    card_type_name = card.card_type.name  # "RED_BERSERK", "BLUE_HYBRID", "GOLD_SUPPORT"
-    CardEffectRegistry.apply_effect(card_type_name, ctx, correct)
 
 
 # ==========================================
@@ -1039,6 +930,8 @@ def render_event(resolve_node_callback: Callable):
     """事件 v6.0"""
     node = st.session_state.game_map.current_node
     player = st.session_state.player
+    has_cursed_blood = "CURSED_BLOOD" in player.relics
+    has_undying_curse = "UNDYING_CURSE" in player.relics
     
     # 确保事件数据已加载或生成
     if 'event_data' not in node.data:
@@ -1101,9 +994,15 @@ def render_event(resolve_node_callback: Callable):
                 value = choice.value
                 
                 if effect == "heal":
-                    player.change_hp(value)
+                    if has_cursed_blood:
+                        st.warning("诅咒之血：无法通过事件回血")
+                    else:
+                        player.change_hp(value)
                 elif effect == "damage":
-                    player.change_hp(value)
+                    dmg = value
+                    if has_undying_curse and dmg < 0:
+                        dmg *= 2
+                    player.change_hp(dmg)
                 elif effect == "gold":
                     if isinstance(value, tuple) and len(value) == 2:
                         amt = random.randint(value[0], value[1])
@@ -1114,21 +1013,43 @@ def render_event(resolve_node_callback: Callable):
                     player.max_hp += value
                     player.hp = min(player.hp, player.max_hp)
                 elif effect == "full_heal":
-                    player.hp = player.max_hp
-                    st.success("💖 生命完全恢复！")
+                    if has_cursed_blood:
+                        st.warning("诅咒之血：无法通过事件回血")
+                    else:
+                        player.hp = player.max_hp
+                        st.success("💖 生命完全恢复！")
                 elif effect == "relic":
                     if value == "random":
                         from registries import RelicRegistry
-                        player.change_hp(-20)
-                        rid, r = RelicRegistry.get_random()
-                        player.relics.append(rid)
-                        st.toast(f"🎁 获得随机圣遗物: {r.name}", icon="🏆")
+                        hp_loss = -20
+                        if has_undying_curse:
+                            hp_loss *= 2
+                        player.change_hp(hp_loss)
+                        pool = RelicRegistry.get_pool("low") + RelicRegistry.get_pool("high")
+                        pool = [rid for rid in pool if rid not in player.relics]
+                        if pool:
+                            rid = random.choice(pool)
+                            r = RelicRegistry.get(rid)
+                            player.relics.append(rid)
+                            _apply_relic_on_gain(player, rid)
+                            st.toast(f"🎁 获得随机圣遗物: {r.name}", icon="🏆")
+                        else:
+                            st.info("暂无可用圣遗物")
                     else:
                         player.relics.append(value)
+                        _apply_relic_on_gain(player, value)
                 elif effect == "trade":
                     if isinstance(value, dict):
-                        if "hp" in value: player.change_hp(value["hp"])
-                        if "gold" in value: player.add_gold(value["gold"])
+                        if "hp" in value:
+                            hp_delta = value["hp"]
+                            if hp_delta > 0 and has_cursed_blood:
+                                st.warning("诅咒之血：无法通过事件回血")
+                            else:
+                                if has_undying_curse and hp_delta < 0:
+                                    hp_delta *= 2
+                                player.change_hp(hp_delta)
+                        if "gold" in value:
+                            player.add_gold(value["gold"])
                 elif effect == "item":
                     player.inventory.append(value)
                 
@@ -1146,7 +1067,13 @@ def render_event(resolve_node_callback: Callable):
                     st.rerun()
                     return
                 elif effect == "risky_treasure":
-                    if random.random() < 0.5:
+                    bad_chance = 0.5
+                    if has_undying_curse:
+                        from registries import RelicRegistry
+                        relic = RelicRegistry.get("UNDYING_CURSE")
+                        effect_data = relic.effect if relic else {}
+                        bad_chance = max(bad_chance, effect_data.get("bad_event_chance", 0.8))
+                    if random.random() < bad_chance:
                         player.change_hp(-20)
                         st.error("💥 陷阱！你受到了 20 伤害")
                     else:
@@ -1231,7 +1158,13 @@ def _render_adventurer_loot(resolve_node_callback):
     
     if 'adv_loot_result' not in st.session_state:
         # 50% 战斗 / 50% 获得卡牌
-        if random.random() < 0.5:
+        bad_chance = 0.5
+        if "UNDYING_CURSE" in player.relics:
+            from registries import RelicRegistry
+            relic = RelicRegistry.get("UNDYING_CURSE")
+            effect_data = relic.effect if relic else {}
+            bad_chance = max(bad_chance, effect_data.get("bad_event_chance", 0.8))
+        if random.random() < bad_chance:
             st.session_state.adv_loot_result = "combat"
         else:
             st.session_state.adv_loot_result = "cards"
@@ -1269,11 +1202,7 @@ def _render_adventurer_loot(resolve_node_callback):
                  for i in range(game_map.floor, len(game_map.node_queue)):
                      if game_map.node_queue[i] == NodeType.COMBAT:
                          game_map.node_queue.pop(i)
-                         # 补一个 Filler (Event/Rest) 以保持总层数? 
-                         # 用户没说，但保持层数一致比较好，或者层数减一？
-                         # "Consist of exactly 10..."
-                         # 如果移除了，那总层数变少。
-                         # 我们补一个 EVENT 吧
+                         # 补一个 Filler (Event/Rest) 以保持总层数
                          game_map.node_queue.insert(i, NodeType.EVENT)
                          st.toast("⚠️ 未来的某场战斗被提前了...", icon="⚔️")
                          break
@@ -1309,7 +1238,13 @@ def _render_mysterious_book(resolve_node_callback):
     st.markdown("你翻阅书页，命运在暗中掷骰。")
 
     if st.button("翻阅"):
-        if random.random() < 0.5:
+        bad_chance = 0.5
+        if "UNDYING_CURSE" in player.relics:
+            from registries import RelicRegistry
+            relic = RelicRegistry.get("UNDYING_CURSE")
+            effect_data = relic.effect if relic else {}
+            bad_chance = max(bad_chance, effect_data.get("bad_event_chance", 0.8))
+        if random.random() < bad_chance:
             st.markdown("### 💀 诅咒之门")
             if random.random() < 0.5:
                 for c in player.deck:
@@ -1339,32 +1274,42 @@ def render_shop(resolve_node_callback: Callable):
     player = st.session_state.player
     st.caption(f"当前金币 {player.gold}")
 
-    if 'shop_items' not in st.session_state or not isinstance(st.session_state.shop_items, dict) or 'relic_slot' not in st.session_state.shop_items:
-        st.session_state.shop_items = ShopRegistry.get_shop_inventory(total_slots=4, relic_chance=0.2)
+    if 'shop_items' not in st.session_state or not isinstance(st.session_state.shop_items, dict) or 'relic_slots' not in st.session_state.shop_items:
+        st.session_state.shop_items = ShopRegistry.get_shop_inventory(
+            total_slots=4,
+            relic_chance=0.2,
+            exclude_relics=set(player.relics),
+        )
 
     inventory = st.session_state.shop_items
-    relic_slot = inventory.get('relic_slot')
+    relic_slots = inventory.get('relic_slots', [])
     other_slots = inventory.get('other_slots', [])
 
-    if relic_slot:
+    if relic_slots:
         st.subheader("圣遗物")
-        cols = st.columns(1)
-        for i, (item_id, item) in enumerate([relic_slot]):
+        cols = st.columns(len(relic_slots))
+        for i, (item_id, item) in enumerate(relic_slots):
             with cols[i]:
                 with st.container(border=True):
+                    price = item.price + SHOP_PRICE_SURCHARGE
                     st.markdown(f"### {item.icon} {item.name}")
                     st.caption(item.description)
-                    st.markdown(f"{item.price} 金币")
+                    st.markdown(f"{price} 金币")
 
-                    can_buy = player.gold >= item.price
+                    can_buy = player.gold >= price
                     if st.button("购买", key=f"relic_{item_id}", disabled=not can_buy):
-                        player.gold -= item.price
+                        player.gold -= price
                         if item.effect == 'grant_relic':
                             player.relics.append(item.value)
+                            _apply_relic_on_gain(player, item.value)
                             st.toast("获得圣遗物")
+                        # 买一个少一个，不补充
+                        st.session_state.shop_items["relic_slots"] = [
+                            pair for pair in relic_slots if pair[0] != item_id
+                        ]
                         st.rerun()
 
-    st.subheader("道具 / 随机遗物")
+    st.subheader("道具")
     if not other_slots:
         st.info("暂无商品")
     else:
@@ -1372,13 +1317,14 @@ def render_shop(resolve_node_callback: Callable):
         for i, (item_id, item) in enumerate(other_slots):
             with cols[i]:
                 with st.container(border=True):
+                    price = item.price + SHOP_PRICE_SURCHARGE
                     st.markdown(f"### {item.icon} {item.name}")
                     st.caption(item.description)
-                    st.markdown(f"{item.price} 金币")
+                    st.markdown(f"{price} 金币")
 
-                    can_buy = player.gold >= item.price
+                    can_buy = player.gold >= price
                     if st.button("购买", key=f"shop_{item_id}", disabled=not can_buy):
-                        player.gold -= item.price
+                        player.gold -= price
                         if item.consumable:
                             player.inventory.append(item_id)
                             st.toast("已放入背包")
@@ -1391,6 +1337,7 @@ def render_shop(resolve_node_callback: Callable):
                                 st.toast(f"最大生命 +{item.value}")
                             elif item.effect == 'grant_relic':
                                 player.relics.append(item.value)
+                                _apply_relic_on_gain(player, item.value)
                                 st.toast("获得圣遗物")
                             elif item.effect == 'relic':
                                 player.relics.append(item.value)
@@ -1536,8 +1483,10 @@ def _render_camp_upgrade(resolve_node_callback):
         if st.button("确认提交", type="primary"):
             if ans.lower() == card.word.lower():
                 # 永久升阶
+                old_tier = card.tier
                 card.tier = min(4, card.tier + 2) # 红(0)->蓝(2)->金(4)
-                _count_upgrade_for_red_reward()
+                if old_tier in (2, 3) and card.tier >= 4:
+                    _grant_red_card_from_pool("蓝升金")
                 st.success(f"🎊 成功！{card.word} 已永久升级！")
                 del st.session_state.upgrade_target
                 _pause(1.0)
@@ -1561,41 +1510,27 @@ def render_tower_prep(complete_callback: Callable):
     st.header("🏔️ 爬塔准备")
 
     st.subheader("初始圣遗物（三选一）")
-    starter_relics = [
-        (
-            "START_BURNING_BLOOD",
-            "燃烧之血",
-            "生命<50：红卡伤害与反噬 +50%；红卡答对吸血 5；出牌后手牌为 0 且最后一张为红卡时抽 2（红优先）",
-        ),
-        (
-            "PAIN_ARMOR",
-            "苦痛之甲",
-            "蓝卡护甲 +50%；所有回血 -50%；非蓝卡反噬 -50%；出牌后手牌为 0 且最后一张为蓝卡时抽 2（优先红+蓝）",
-        ),
-        (
-            "WIZARD_HAT",
-            "巫师之帽",
-            "红/蓝正向效果 -30%（反噬不变）；金卡效果翻倍；金卡耐久=2；圣遗物数值效果翻倍；金卡后额外出牌 1 次",
-        ),
-    ]
+    from registries import RelicRegistry
+    starter_relics = RelicRegistry.get_pool("starter")
 
     if "starter_relic_choice" not in st.session_state:
         st.session_state.starter_relic_choice = None
 
     cols = st.columns(3)
-    for i, (rid, name, desc) in enumerate(starter_relics):
+    for i, rid in enumerate(starter_relics):
+        relic = RelicRegistry.get(rid)
+        if not relic:
+            continue
         with cols[i]:
             with st.container(border=True):
-                st.markdown(f"**{name}**")
-                st.caption(desc)
+                st.markdown(f"**{relic.name}**")
+                st.caption(relic.description)
                 if st.button("选择", key=f"starter_relic_{rid}"):
                     st.session_state.starter_relic_choice = rid
 
     if st.session_state.starter_relic_choice:
-        selected_name = next(
-            (name for rid, name, _ in starter_relics if rid == st.session_state.starter_relic_choice),
-            st.session_state.starter_relic_choice,
-        )
+        relic = RelicRegistry.get(st.session_state.starter_relic_choice)
+        selected_name = relic.name if relic else st.session_state.starter_relic_choice
         st.info(f"已选择：{selected_name}")
 
     st.divider()

@@ -45,6 +45,7 @@ class MapSystem:
         self.elite_combats_remaining = MANDATORY_ELITE_COMBATS
         self.normal_combats_completed = 0
         self.elite_combats_completed = 0
+        self.boss_sequence_step = 0
     
     def _generate_queue(self) -> List[NodeType]:
         """生成整个流程的关卡队列 (10小怪 + 6精英 + 4随机 + 1Boss)"""

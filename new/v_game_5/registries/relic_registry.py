@@ -1,6 +1,6 @@
 ﻿# -*- coding: utf-8 -*-
 from dataclasses import dataclass
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 
 
 @dataclass
@@ -128,7 +128,140 @@ RELICS: Dict[str, Relic] = {
         effect={},
         rarity="epic",
     ),
+    "WINE": Relic(
+        name="酒",
+        icon="🍶",
+        description="本局红卡伤害 +2",
+        trigger="passive",
+        effect={"red_damage_bonus": 2},
+        rarity="common",
+    ),
+    "CURSED_BLOOD": Relic(
+        name="诅咒之血",
+        icon="🧛",
+        description="黑卡伤害 +3；本局无法通过道具/事件回血",
+        trigger="passive",
+        effect={"black_damage_bonus": 3, "no_item_heal": True, "no_event_heal": True},
+        rarity="common",
+    ),
+    "FIGHTER_SOUL": Relic(
+        name="格斗家之魂",
+        icon="🥊",
+        description="蓝卡后接红卡有 20% 暴击（额外伤害 +3）",
+        trigger="passive",
+        effect={"crit_chance": 0.2, "crit_bonus": 3},
+        rarity="common",
+    ),
+    "MONKEY_PAW": Relic(
+        name="猴爪",
+        icon="🐒",
+        description="最大生命上限为 50；抵御一次致命伤害",
+        trigger="passive",
+        effect={"max_hp_cap": 50},
+        rarity="common",
+    ),
+    "UNDYING_CURSE": Relic(
+        name="不死诅咒",
+        icon="☠️",
+        description="所有卡牌视为黑卡；负面效果翻倍；不良事件几率大幅提高",
+        trigger="passive",
+        effect={"negative_multiplier": 2, "bad_event_chance": 0.8},
+        rarity="rare",
+    ),
+    "AGANG_WRATH": Relic(
+        name="阿刚之怒",
+        icon="💢",
+        description="出过金卡后连续 3 张红卡，最后一张红卡伤害翻倍",
+        trigger="passive",
+        effect={"red_chain": 3, "red_multiplier": 2},
+        rarity="rare",
+    ),
+    "CURSE_MASK": Relic(
+        name="诅咒面具",
+        icon="🎭",
+        description="黑卡反噬伤害转化为等值护甲",
+        trigger="passive",
+        effect={},
+        rarity="epic",
+    ),
+    "SCHOLAR_WRATH": Relic(
+        name="博学者之怒",
+        icon="📚",
+        description="连续使用金卡→蓝卡→红卡后，直接造成 10 点伤害",
+        trigger="passive",
+        effect={"sequence_damage": 10},
+        rarity="epic",
+    ),
+    "BLEEDING_DAGGER": Relic(
+        name="放血刀",
+        icon="🗡️",
+        description="连续红卡触发放血：每回合 (x-1)*2 伤害，持续 2 回合（可叠加）",
+        trigger="passive",
+        effect={"bleed_duration": 2, "bleed_damage_step": 2},
+        rarity="epic",
+    ),
+    "NUNCHAKU": Relic(
+        name="双截棍",
+        icon="🥋",
+        description="每回合可额外使用 1 张红卡",
+        trigger="passive",
+        effect={"extra_red_per_turn": 1},
+        rarity="epic",
+    ),
+    "OLD_SHIELD": Relic(
+        name="斑驳旧盾",
+        icon="🛡️",
+        description="护甲完全抵挡怪物攻击时，立刻获得 10 护甲",
+        trigger="passive",
+        effect={"block_armor_bonus": 10},
+        rarity="epic",
+    ),
+    "OLD_ARMOR": Relic(
+        name="斑驳旧甲",
+        icon="🥾",
+        description="战斗开始获得 5 护甲；连续使用两张蓝卡额外获得 5 护甲",
+        trigger="passive",
+        effect={"start_armor": 5, "blue_combo_armor": 5},
+        rarity="epic",
+    ),
 }
+
+# ==========================================
+# 圣遗物池（相互独立）
+# ==========================================
+STARTER_RELIC_POOL: List[str] = [
+    "START_BURNING_BLOOD",
+    "PAIN_ARMOR",
+    "WIZARD_HAT",
+]
+
+LOW_TIER_RELIC_POOL: List[str] = [
+    "WINE",
+    "CURSED_BLOOD",
+    "FIGHTER_SOUL",
+    "MONKEY_PAW",
+    "UNDYING_CURSE",
+    "AGANG_WRATH",
+    "BLOOD_VIAL",
+    "GOLD_IDOL",
+    "GOLD_CHARM",
+    "BLOOD_CRYSTAL",
+    "DEAD_BRANCH",
+    "ANCHOR",
+    "ORICHALCUM",
+    "BURNING_BLOOD",
+]
+
+HIGH_TIER_RELIC_POOL: List[str] = [
+    "CURSE_MASK",
+    "SCHOLAR_WRATH",
+    "BLEEDING_DAGGER",
+    "NUNCHAKU",
+    "OLD_SHIELD",
+    "OLD_ARMOR",
+    "FUSION_HAMMER",
+    "PHILOSOPHERS_STONE",
+]
 
 
 class RelicRegistry:
@@ -139,6 +272,16 @@ class RelicRegistry:
     @staticmethod
     def get_all() -> Dict[str, Relic]:
         return RELICS.copy()
+
+    @staticmethod
+    def get_pool(pool_name: str) -> List[str]:
+        if pool_name == "starter":
+            return STARTER_RELIC_POOL.copy()
+        if pool_name == "low":
+            return LOW_TIER_RELIC_POOL.copy()
+        if pool_name == "high":
+            return HIGH_TIER_RELIC_POOL.copy()
+        return []
 
     @staticmethod
     def get_by_rarity(rarity: str) -> Dict[str, Relic]:

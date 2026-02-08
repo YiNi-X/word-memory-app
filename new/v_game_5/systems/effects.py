@@ -13,6 +13,7 @@ def apply_effects(relic, ctx) -> bool:
 
     player = ctx.player
     enemy = ctx.enemy
+    notify = getattr(ctx, "notify", None)
     scale = 2 if "WIZARD_HAT" in getattr(player, "relics", []) else 1
 
     def _scale(val):
@@ -21,14 +22,14 @@ def apply_effects(relic, ctx) -> bool:
         return val
 
     if "heal" in effect:
-        player.change_hp(_scale(effect["heal"]))
+        player.change_hp(_scale(effect["heal"]), notify=notify)
 
     if "gold" in effect:
-        player.add_gold(_scale(effect["gold"]))
+        player.add_gold(_scale(effect["gold"]), notify=notify)
 
     if "armor_if_full" in effect:
         if player.hp >= player.max_hp:
-            player.add_armor(_scale(effect["armor_if_full"]))
+            player.add_armor(_scale(effect["armor_if_full"]), notify=notify)
 
     if "elite_gold_bonus" in effect:
         if enemy and getattr(enemy, "is_elite", False) and "gold_reward" in ctx.data:

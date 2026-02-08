@@ -108,6 +108,60 @@ SHOP_ITEMS: Dict[str, ShopItem] = {
         value="GOLD_CHARM",
         consumable=False,
     ),
+    "RELIC_WINE": ShopItem(
+        name="酒",
+        icon="🍶",
+        description="获得圣遗物：酒",
+        price=50,
+        effect="grant_relic",
+        value="WINE",
+        consumable=False,
+    ),
+    "RELIC_CURSED_BLOOD": ShopItem(
+        name="诅咒之血",
+        icon="🧛",
+        description="获得圣遗物：诅咒之血",
+        price=60,
+        effect="grant_relic",
+        value="CURSED_BLOOD",
+        consumable=False,
+    ),
+    "RELIC_FIGHTER_SOUL": ShopItem(
+        name="格斗家之魂",
+        icon="🥊",
+        description="获得圣遗物：格斗家之魂",
+        price=70,
+        effect="grant_relic",
+        value="FIGHTER_SOUL",
+        consumable=False,
+    ),
+    "RELIC_MONKEY_PAW": ShopItem(
+        name="猴爪",
+        icon="🐒",
+        description="获得圣遗物：猴爪",
+        price=80,
+        effect="grant_relic",
+        value="MONKEY_PAW",
+        consumable=False,
+    ),
+    "RELIC_UNDYING_CURSE": ShopItem(
+        name="不死诅咒",
+        icon="☠️",
+        description="获得圣遗物：不死诅咒",
+        price=60,
+        effect="grant_relic",
+        value="UNDYING_CURSE",
+        consumable=False,
+    ),
+    "RELIC_AGANG_WRATH": ShopItem(
+        name="阿刚之怒",
+        icon="💢",
+        description="获得圣遗物：阿刚之怒",
+        price=70,
+        effect="grant_relic",
+        value="AGANG_WRATH",
+        consumable=False,
+    ),
 }
 
 
@@ -126,29 +180,30 @@ class ShopRegistry:
         return {k: SHOP_ITEMS[k] for k in keys}
 
     @staticmethod
-    def get_shop_inventory(total_slots: int = 4, relic_chance: float = 0.2) -> Dict[str, Any]:
-        relic_ids = [k for k, v in SHOP_ITEMS.items() if v.effect == "grant_relic"]
+    def get_shop_inventory(total_slots: int = 4, relic_chance: float = 0.2, exclude_relics: Optional[set] = None) -> Dict[str, Any]:
+        from registries import RelicRegistry
+        exclude_relics = exclude_relics or set()
+        low_pool = set(RelicRegistry.get_pool("low"))
+        relic_ids = [
+            k for k, v in SHOP_ITEMS.items()
+            if v.effect == "grant_relic" and v.value in low_pool and v.value not in exclude_relics
+        ]
         normal_ids = [k for k, v in SHOP_ITEMS.items() if v.effect != "grant_relic"]
 
-        inventory = {"relic_slot": None, "other_slots": []}
+        inventory = {"relic_slots": [], "other_slots": []}
 
         if relic_ids:
-            relic_id = random.choice(relic_ids)
-            inventory["relic_slot"] = (relic_id, SHOP_ITEMS[relic_id])
-            relic_ids = [rid for rid in relic_ids if rid != relic_id]
+            picks = random.sample(relic_ids, min(3, len(relic_ids)))
+            inventory["relic_slots"] = [(rid, SHOP_ITEMS[rid]) for rid in picks]
+            relic_ids = [rid for rid in relic_ids if rid not in picks]
 
         slots_to_fill = max(0, total_slots - 1)
         for _ in range(slots_to_fill):
-            pick_from_relic = relic_ids and (random.random() < relic_chance)
-            pool = relic_ids if pick_from_relic else normal_ids
-            if not pool:
-                pool = relic_ids or normal_ids
+            pool = normal_ids
             if not pool:
                 break
             pick = random.choice(pool)
             inventory["other_slots"].append((pick, SHOP_ITEMS[pick]))
-            if pick in relic_ids:
-                relic_ids.remove(pick)
             if pick in normal_ids:
                 normal_ids.remove(pick)
 

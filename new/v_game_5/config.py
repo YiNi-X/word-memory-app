@@ -70,6 +70,7 @@ UI_PAUSE_EXTRA = 1.0
 SHOP_RED_CARD_BASE_PRICE = 20   # 红卡基础价格（递增 20/40/60...）
 SHOP_BLUE_CARD_BASE_PRICE = 50  # 蓝卡基础价格（递增 50/100/150...）
 SHOP_GOLD_CARD_PRICE = 100      # 金卡固定价格（每局仅一次）
+SHOP_PRICE_SURCHARGE = 50       # 商店道具/圣遗物加价
 
 # 奖励配置
 GOLD_COMBAT = 30

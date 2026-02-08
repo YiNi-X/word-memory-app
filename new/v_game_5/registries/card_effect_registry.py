@@ -1,7 +1,10 @@
-# Card effect registry
+﻿# -*- coding: utf-8 -*-
 import random
 from dataclasses import dataclass
-from typing import Callable, Any
+from typing import Callable, Any, Optional
+
+from models import CardType
+from systems.combat_events import CombatEvent
 
 
 @dataclass
@@ -10,7 +13,8 @@ class EffectContext:
     enemy: Any
     cs: Any
     card: Any
-    st: Any
+    events: list
+    notify: Optional[Callable[[str, str, Optional[str]], None]] = None
 
 
 @dataclass
@@ -22,38 +26,55 @@ class CardEffect:
     on_wrong: Callable[[EffectContext], None] = None
 
 
+def _emit(ctx: EffectContext, level: str, text: str, icon: str = None):
+    ctx.events.append(CombatEvent(level=level, text=text, icon=icon))
+
+
 def _red_heavy_strike(ctx: EffectContext):
     damage = ctx.card.damage
-    if "START_BURNING_BLOOD" in getattr(ctx.player, "relics", []):
-        if ctx.player.hp < 50:
-            damage *= 1.5
-    if "WIZARD_HAT" in getattr(ctx.player, "relics", []):
+    relics = getattr(ctx.player, "relics", [])
+    if "WINE" in relics:
+        damage += 2
+    if "FIGHTER_SOUL" in relics and ctx.cs.last_card_type == CardType.BLUE_HYBRID:
+        crit_chance = 0.2
+        crit_bonus = 3
+        if random.random() < crit_chance:
+            damage += crit_bonus
+            _emit(ctx, "toast", "🥊 暴击！额外伤害 +3", "🥊")
+    if "START_BURNING_BLOOD" in relics and ctx.player.hp < 50:
+        damage *= 1.5
+    if "WIZARD_HAT" in relics:
         damage *= 0.7
     if ctx.cs.next_card_multiplier > 1:
         damage *= ctx.cs.next_card_multiplier
         ctx.cs.next_card_multiplier = 1
+    if "AGANG_WRATH" in relics and ctx.cs.agang_active and ctx.cs.agang_red_count >= 3:
+        damage *= 2
+        _emit(ctx, "toast", "💢 阿刚之怒！伤害翻倍", "💢")
     damage = int(damage)
     ctx.enemy.take_damage(damage)
-    ctx.st.toast(f"造成 {damage} 伤害")
+    _emit(ctx, "toast", f"造成 {damage} 伤害")
 
-    if "START_BURNING_BLOOD" in getattr(ctx.player, "relics", []) and ctx.player.hp < 50:
+    if "START_BURNING_BLOOD" in relics and ctx.player.hp < 50:
         leech = 5
-        if "WIZARD_HAT" in getattr(ctx.player, "relics", []):
+        if "WIZARD_HAT" in relics:
             leech *= 2
         ctx.enemy.take_damage(leech)
-        ctx.player.change_hp(leech)
+        ctx.player.change_hp(leech, notify=ctx.notify)
 
 
 def _red_self_harm(ctx: EffectContext):
     penalty = ctx.card.penalty
-    if "START_BURNING_BLOOD" in getattr(ctx.player, "relics", []):
-        if ctx.player.hp < 50:
-            penalty *= 1.5
-    if "PAIN_ARMOR" in getattr(ctx.player, "relics", []):
+    relics = getattr(ctx.player, "relics", [])
+    if "START_BURNING_BLOOD" in relics and ctx.player.hp < 50:
+        penalty *= 1.5
+    if "UNDYING_CURSE" in relics:
+        penalty *= 2
+    if "PAIN_ARMOR" in relics:
         penalty *= 0.5
     penalty = int(penalty)
-    ctx.player.change_hp(-penalty)
-    ctx.st.error(f"反噬 {penalty}")
+    ctx.player.change_hp(-penalty, notify=ctx.notify)
+    _emit(ctx, "error", f"反噬 {penalty}")
 
 
 RED_EFFECTS = CardEffect(
@@ -80,14 +101,14 @@ def _blue_hybrid_attack(ctx: EffectContext):
     damage = int(damage)
     armor = int(armor)
     ctx.enemy.take_damage(damage)
-    ctx.player.add_armor(armor)
-    ctx.st.toast(f"造成 {damage} 伤害，获得 {armor} 护甲")
+    ctx.player.add_armor(armor, notify=ctx.notify)
+    _emit(ctx, "toast", f"造成 {damage} 伤害，获得 {armor} 护甲")
 
     if hasattr(ctx.card, "is_temporary_buffed") and ctx.card.is_temporary_buffed:
         heal = 5
         if "WIZARD_HAT" in getattr(ctx.player, "relics", []):
             heal *= 0.7
-        ctx.player.change_hp(int(heal))
+        ctx.player.change_hp(int(heal), notify=ctx.notify)
 
 
 def _blue_no_penalty(ctx: EffectContext):
@@ -115,19 +136,19 @@ def _gold_random_effect(ctx: EffectContext):
     effect = random.choice(["mult", "draw", "damage"])
     if effect == "mult":
         ctx.cs.next_card_multiplier = multiplier
-        ctx.st.toast(f"金卡效果：下一张数值 x{multiplier}")
+        _emit(ctx, "toast", f"金卡效果：下张数值 x{multiplier}")
     elif effect == "draw":
         drawn_count = 0
         for _ in range(draw_count):
             if ctx.cs.draw_card():
                 drawn_count += 1
         if drawn_count:
-            ctx.st.toast(f"金卡效果：抽 {drawn_count} 张牌")
+            _emit(ctx, "toast", f"金卡效果：抽 {drawn_count} 张牌")
         else:
-            ctx.st.toast("金卡效果：没有可抽的牌")
+            _emit(ctx, "toast", "金卡效果：没有可抽的牌")
     else:
         ctx.enemy.take_damage(direct_damage)
-        ctx.st.toast(f"金卡效果：直接造成 {direct_damage} 伤害")
+        _emit(ctx, "toast", f"金卡效果：直接造成 {direct_damage} 伤害")
 
 
 def _gold_no_penalty(ctx: EffectContext):
@@ -145,21 +166,29 @@ GOLD_EFFECTS = CardEffect(
 
 def _black_curse_attack(ctx: EffectContext):
     damage = ctx.card.damage
+    relics = getattr(ctx.player, "relics", [])
+    if "CURSED_BLOOD" in relics:
+        damage += 3
     if ctx.cs.next_card_multiplier > 1:
         damage *= ctx.cs.next_card_multiplier
         ctx.cs.next_card_multiplier = 1
     damage = int(damage)
     ctx.enemy.take_damage(damage)
-    ctx.st.toast(f"诅咒造成 {damage} 伤害")
+    _emit(ctx, "toast", f"诅咒造成 {damage} 伤害")
 
 
 def _black_curse_backfire(ctx: EffectContext):
     penalty = ctx.card.penalty
-    if "PAIN_ARMOR" in getattr(ctx.player, "relics", []):
+    relics = getattr(ctx.player, "relics", [])
+    if "UNDYING_CURSE" in relics:
+        penalty *= 2
+    if "PAIN_ARMOR" in relics:
         penalty *= 0.5
     penalty = int(penalty)
-    ctx.player.change_hp(-penalty)
-    ctx.st.error(f"诅咒反噬 {penalty}")
+    ctx.player.change_hp(-penalty, notify=ctx.notify)
+    if "CURSE_MASK" in relics and penalty > 0:
+        ctx.player.add_armor(penalty, notify=ctx.notify)
+    _emit(ctx, "error", f"诅咒反噬 {penalty}")
 
 
 BLACK_EFFECTS = CardEffect(
@@ -192,11 +221,11 @@ class CardEffectRegistry:
                     dmg *= ctx.cs.next_card_multiplier
                     ctx.cs.next_card_multiplier = 1
                 ctx.enemy.take_damage(dmg)
-                ctx.st.toast(f"首领受到 {dmg} 伤害")
+                _emit(ctx, "toast", f"首领受到 {dmg} 伤害")
             else:
                 penalty = 25
-                ctx.player.change_hp(-penalty)
-                ctx.st.error(f"答错惩罚 {penalty}")
+                ctx.player.change_hp(-penalty, notify=ctx.notify)
+                _emit(ctx, "error", f"答错惩罚 {penalty}")
             return
 
         effect = cls.get_effect(card_type_name)

@@ -36,6 +36,8 @@ def render_hud():
     cs = st.session_state.get('card_combat')
     in_combat = bool(cs) and getattr(cs, 'phase', None) == CombatPhase.BATTLE
     with st.sidebar:
+        if in_combat and cs:
+            render_combat_status(cs)
         render_backpack_panel(player.relics, player.inventory, in_combat, cs)
 
     with col_stats:
@@ -101,13 +103,16 @@ def render_backpack_panel(relics: list, inventory: list, in_combat: bool, combat
                     if in_combat:
                         can_use = item.consumable and item.effect in supported and not in_answer_phase
                     else:
-                        can_use = item.consumable and item.effect in {"heal", "max_hp"}
+                        can_use = item.consumable and item.effect in supported
                     if st.button("使用", key=f"use_item_{item_id}", disabled=not can_use):
                         inv = st.session_state.player.inventory
                         if item_id in inv:
                             inv.remove(item_id)
                         if item.effect == "heal":
-                            st.session_state.player.change_hp(item.value)
+                            if "CURSED_BLOOD" in st.session_state.player.relics:
+                                st.warning("诅咒之血：无法通过道具回血")
+                            else:
+                                st.session_state.player.change_hp(item.value)
                         elif item.effect == "shield":
                             st.session_state._item_shield = True
                         elif item.effect == "damage_reduce":
@@ -121,9 +126,49 @@ def render_backpack_panel(relics: list, inventory: list, in_combat: bool, combat
                             st.session_state.player.hp = min(
                                 st.session_state.player.hp + item.value, st.session_state.player.max_hp
                             )
+                            if "MONKEY_PAW" in st.session_state.player.relics and st.session_state.player.max_hp > 50:
+                                st.session_state.player.max_hp = 50
+                                st.session_state.player.hp = min(
+                                    st.session_state.player.hp, st.session_state.player.max_hp
+                                )
                         if in_combat:
                             st.session_state._end_turn_due_to_item = True
                         st.rerun()
+
+
+def render_combat_status(cs):
+    """侧边栏战斗状态显示"""
+    player = st.session_state.player
+    relics = getattr(player, "relics", [])
+
+    with st.container(border=True):
+        st.markdown("**战斗状态**")
+        st.caption(f"🔴 红连击: {cs.red_streak} | 🔵 蓝连击: {cs.blue_streak}")
+
+        if "BLEEDING_DAGGER" in relics:
+            if cs.bleed_turns > 0 and cs.bleed_damage > 0:
+                st.write(f"🩸 放血: {cs.bleed_damage} 伤害 / {cs.bleed_turns} 回合")
+            else:
+                st.write("🩸 放血: 无")
+
+        if "NUNCHAKU" in relics:
+            status = "可用" if not cs.nunchaku_used else "已用"
+            st.write(f"🥋 双截棍: {status}")
+
+        if "AGANG_WRATH" in relics:
+            progress = cs.agang_red_count if cs.agang_active else 0
+            st.write(f"💢 阿刚之怒: {progress}/3")
+
+        if cs.color_sequence:
+            icon_map = {
+                CardType.RED_BERSERK: "🟥",
+                CardType.BLUE_HYBRID: "🟦",
+                CardType.GOLD_SUPPORT: "🟨",
+            }
+            icons = [icon_map.get(t, "❓") for t in cs.color_sequence]
+            st.write(f"🔁 序列: {' '.join(icons)}")
+        else:
+            st.write("🔁 序列: 无")
 
 
 def render_relic_panel(relics: list):
@@ -173,7 +218,8 @@ def render_deck_viewer(deck: list):
 
 
 def render_word_card(card: WordCard, idx: int, onclick_key: str = None,
-                     show_word: bool = True, show_meaning: bool = True):
+                     show_word: bool = True, show_meaning: bool = True,
+                     disabled: bool = False):
     """渲染单词卡牌"""
     card_type = card.card_type
     border_color = card_type.color
@@ -192,12 +238,12 @@ def render_word_card(card: WordCard, idx: int, onclick_key: str = None,
         if show_word:
             st.markdown(f"### {card.word}")
         else:
-            st.markdown("### ？？？")
+            st.markdown("###")
 
         if show_meaning and show_word:
             st.caption(card.meaning)
         else:
-            st.caption("（释义已隐藏）")
+            st.caption("###")
 
         if card_type == CardType.RED_BERSERK:
             st.markdown(f"⚔️ **{card.damage}** | 💥 **-{card.penalty}**")
@@ -209,7 +255,7 @@ def render_word_card(card: WordCard, idx: int, onclick_key: str = None,
                 st.caption(f"耐久: {card.gold_uses_remaining}")
 
         if onclick_key:
-            return st.button("选择", key=onclick_key, use_container_width=True)
+            return st.button("选择", key=onclick_key, use_container_width=True, disabled=disabled)
 
     return False
 
@@ -255,7 +301,7 @@ def render_enemy(enemy, show_intent: bool = True):
                 st.info(f"⏳ 准备中...（{enemy.current_timer} 回合后攻击）")
 
 
-def render_hand(hand: list, on_play: bool = False):
+def render_hand(hand: list, on_play: bool = False, allowed_types: set = None):
     """渲染手牌"""
     if not hand:
         st.info("手牌已用完！")
@@ -269,8 +315,15 @@ def render_hand(hand: list, on_play: bool = False):
     for i, card in enumerate(hand):
         with cols[i]:
             if on_play:
-                if render_word_card(card, i, onclick_key=f"play_{i}",
-                                   show_word=False, show_meaning=False):
+                can_play = allowed_types is None or card.card_type in allowed_types
+                if render_word_card(
+                    card,
+                    i,
+                    onclick_key=f"play_{i}",
+                    show_word=False,
+                    show_meaning=False,
+                    disabled=not can_play,
+                ):
                     clicked = i
             else:
                 render_word_card(card, i, show_word=True, show_meaning=True)

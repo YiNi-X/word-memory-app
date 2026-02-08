@@ -7,7 +7,6 @@ COMBAT_FLAGS = [
     "_item_hint",
     "_greedy_curse",
     "_player_stunned",
-    "upgrade_red_counter",
 ]
 
 

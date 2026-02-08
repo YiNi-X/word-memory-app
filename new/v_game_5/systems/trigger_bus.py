@@ -1,5 +1,5 @@
 from dataclasses import dataclass, field
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Callable
 
 from registries import RelicRegistry
 from systems.conditions import conditions_met
@@ -13,6 +13,7 @@ class TriggerContext:
     card: Optional[Any] = None
     combat_state: Optional[Any] = None
     data: Dict[str, Any] = field(default_factory=dict)
+    notify: Optional[Callable[[str, str, Optional[str]], None]] = None
 
 
 class TriggerBus:

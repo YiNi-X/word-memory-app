@@ -12,5 +12,15 @@ if str(_parent) not in sys.path:
 from systems.word_pool import WordPool
 from systems.map_system import MapSystem
 from systems.trigger_bus import TriggerBus, TriggerContext
+from systems.combat_engine import CombatEngine
+from systems.combat_events import CombatEvent, CombatResult
 
-__all__ = ['WordPool', 'MapSystem', 'TriggerBus', 'TriggerContext']
+__all__ = [
+    'WordPool',
+    'MapSystem',
+    'TriggerBus',
+    'TriggerContext',
+    'CombatEngine',
+    'CombatEvent',
+    'CombatResult',
+]

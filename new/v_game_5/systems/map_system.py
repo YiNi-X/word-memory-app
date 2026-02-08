@@ -18,7 +18,15 @@ if str(_parent) not in sys.path:
     sys.path.insert(0, str(_parent))
 
 from models import Node, NodeType
-from config import TOTAL_FLOORS, MANDATORY_NORMAL_COMBATS, MANDATORY_ELITE_COMBATS
+from config import (
+    TOTAL_FLOORS,
+    MANDATORY_NORMAL_COMBATS,
+    MANDATORY_ELITE_COMBATS,
+    MAX_NON_COMBAT_STREAK,
+    UTILITY_OFFER_BASE,
+    UTILITY_OFFER_DECAY,
+    UTILITY_OFFER_MIN,
+)
 
 
 class MapSystem:
@@ -37,52 +45,57 @@ class MapSystem:
         self.current_node: Optional[Node] = None
         self.next_options: List[Node] = []
         
-        # v6.0 强制战斗列表 (Anti-Skip)
-        self.node_queue = self._generate_queue()
-        
+
         # 战斗计数器 初始化
         self.normal_combats_remaining = MANDATORY_NORMAL_COMBATS
         self.elite_combats_remaining = MANDATORY_ELITE_COMBATS
         self.normal_combats_completed = 0
         self.elite_combats_completed = 0
         self.boss_sequence_step = 0
+        self.non_combat_streak = 0
     
-    def _generate_queue(self) -> List[NodeType]:
-        """生成整个流程的关卡队列 (10小怪 + 6精英 + 4随机 + 1Boss)"""
-        queue = []
-        # 1. 必经的小怪和精英
-        combats = [NodeType.COMBAT] * (MANDATORY_NORMAL_COMBATS - 1) # 第1关固定小怪，不在列表内
-        elites = [NodeType.ELITE] * MANDATORY_ELITE_COMBATS
-        
-        # 2. 填充随机事件 (商店、营地、随机事件)
-        utilities = [NodeType.SHOP, NodeType.REST, NodeType.EVENT, NodeType.EVENT, NodeType.REST]
-        
-        # 3. 洗牌
-        middle_part = combats + elites + utilities
-        random.shuffle(middle_part)
-        
-        # 4. 组装全流程 (Floor 1 固定小怪)
-        queue.append(NodeType.COMBAT)
-        queue.extend(middle_part)
-        
-        # 5. 补足层数并添加 Boss
-        while len(queue) < self.total_floors - 1:
-            queue.append(random.choice([NodeType.EVENT, NodeType.REST]))
-        
-        queue.append(NodeType.BOSS)
-        return queue
-
     def generate_next_options(self) -> List[Node]:
-        """按顺序从队列中取出下一个关卡"""
-        if self.floor >= len(self.node_queue):
-            return []
-        
-        node_type = self.node_queue[self.floor]
+        # 进入 Boss 阶段的强制序列
+        if self.boss_sequence_step == 1:
+            self.floor += 1
+            self.boss_sequence_step = 2
+            return [Node(type=NodeType.REST, level=self.floor)]
+        if self.boss_sequence_step == 2:
+            self.floor += 1
+            return [Node(type=NodeType.BOSS, level=self.floor)]
+
+        # 第一层固定 COMBAT
+        if self.floor == 0:
+            self.floor += 1
+            return [Node(type=NodeType.COMBAT, level=self.floor)]
+
+        # 战斗耗尽 -> 开启 Boss 阶段
+        if self.normal_combats_remaining == 0 and self.elite_combats_remaining == 0:
+            self.boss_sequence_step = 1
+            return self.generate_next_options()
+
+        # 生成分支：一个战斗 + 一个非战斗
+        combat_options = self._combat_branch_options()
+
+        # 硬限制：连续非战斗达到上限 -> 仅给战斗选项
+        if self.non_combat_streak >= MAX_NON_COMBAT_STREAK:
+            self.floor += 1
+            return [Node(type=t, level=self.floor) for t in combat_options]
+
+        # 软限制：连续非战斗越多，非战斗出现概率越低
+        utility_chance = max(UTILITY_OFFER_MIN, UTILITY_OFFER_BASE - UTILITY_OFFER_DECAY * self.non_combat_streak)
+        allow_utility = random.random() < utility_chance
+
         self.floor += 1
-        
-        # 为了 UI 保持一致，依然返回列表，但通常只有 1 个固定选项 (强制线性)
-        # 或者可以提供 2 个相同类型的点选（模拟选择但路径唯一）
-        return [Node(type=node_type, level=self.floor)]
+        if allow_utility:
+            utility_type = self._pick_utility_type()
+            return [
+                Node(type=combat_options[0], level=self.floor),
+                Node(type=utility_type, level=self.floor),
+            ]
+
+        return [Node(type=t, level=self.floor) for t in combat_options]
+
     
     def _generate_mandatory_combat_options(self) -> List[Node]:
         """生成强制战斗选项"""
@@ -106,6 +119,31 @@ class MapSystem:
         
         return options
     
+    def _pick_combat_type(self) -> NodeType:
+        if self.elite_combats_remaining <= 0:
+            return NodeType.COMBAT
+        if self.normal_combats_remaining <= 0:
+            return NodeType.ELITE
+        # 有两种都剩余时用权重
+        return random.choices(
+            [NodeType.COMBAT, NodeType.ELITE],
+            weights=[0.7, 0.3]
+        )[0]
+
+    def _combat_branch_options(self) -> List[NodeType]:
+        primary = self._pick_combat_type()
+        if self.elite_combats_remaining > 0 and self.normal_combats_remaining > 0:
+            secondary = NodeType.ELITE if primary == NodeType.COMBAT else NodeType.COMBAT
+            return [primary, secondary]
+        return [primary]
+
+    def _pick_utility_type(self) -> NodeType:
+        return random.choices(
+            [NodeType.EVENT, NodeType.REST, NodeType.SHOP],
+            weights=[0.6, 0.2, 0.2],
+            k=1,
+        )[0]
+
     def record_combat_completed(self, node_type: NodeType):
         """记录战斗完成（由外部调用）"""
         if node_type == NodeType.COMBAT:

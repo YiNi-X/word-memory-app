@@ -18,6 +18,10 @@ INITIAL_GOLD = 50  # 每局初始金币
 # 强制战斗配置
 MANDATORY_NORMAL_COMBATS = 10  # 必须遇到的小怪数量
 MANDATORY_ELITE_COMBATS = 6   # 必须遇到的精英数量
+MAX_NON_COMBAT_STREAK = 2     # 连续非战斗最大允许次数
+UTILITY_OFFER_BASE = 0.8      # 非战斗出现基准概率
+UTILITY_OFFER_DECAY = 0.3     # 连续非战斗时的概率衰减
+UTILITY_OFFER_MIN = 0.2       # 非战斗出现最小概率
 
 # ==========================================
 # 🎴 卡牌战斗配置
@@ -28,9 +32,9 @@ MIN_ATTACK_CARDS = 3    # 最少红卡数量
 BATTLE_HAND_SIZE = 6    # ????????
 
 # 本局单词池配置
-GAME_POOL_RED = 16      # ??????
-GAME_POOL_BLUE = 10     # ??????
-GAME_POOL_GOLD = 6      # ??????
+GAME_POOL_RED = 30      #每局游戏红卡总数（小怪+精英+Boss）(??????)
+GAME_POOL_BLUE = 10     #每局游戏蓝卡总数（小怪+精英+Boss）(??????)
+GAME_POOL_GOLD = 6      #每局游戏金卡总数（小怪+精英+Boss）(??????)
 
 # 初始卡组配置
 INITIAL_DECK_RED = 6    # 开局红卡数

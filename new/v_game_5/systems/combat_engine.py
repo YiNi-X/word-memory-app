@@ -251,6 +251,19 @@ class CombatEngine:
                         CombatEngine._grant_red_card_from_pool(session_state, events, "蓝升金")
                         rewarded_this_answer = True
 
+        def apply_permanent_tier(new_tier: int, level: str, label: str, icon: str):
+            card.tier = new_tier
+            if not card.is_blackened:
+                card.temp_level = None
+            for c in player.deck:
+                if c.word == card.word:
+                    c.tier = new_tier
+                    if not c.is_blackened:
+                        c.temp_level = None
+            if db and player_id:
+                db.set_word_tier(player_id, card.word, new_tier, current_room)
+            CombatEngine._emit(events, level, label, icon)
+
         if correct:
             CombatEngine._emit(events, "success", "✅ 正确！")
             ctx = EffectContext(
@@ -289,16 +302,15 @@ class CombatEngine:
             from config import RED_TO_BLUE_UPGRADE_THRESHOLD, BLUE_TO_GOLD_UPGRADE_THRESHOLD
             streak = session_state.get("in_game_streak")
             streak[word] = streak.get(word, 0) + 1
+            db_upgraded = bool(result and result.get("upgraded"))
 
             if pre_type == CardType.RED_BERSERK:
-                if streak[word] >= RED_TO_BLUE_UPGRADE_THRESHOLD:
-                    card.temp_level = "blue"
-                    CombatEngine._emit(events, "toast", f"升级为蓝卡：{word}", "🟦")
+                if not db_upgraded and streak[word] >= RED_TO_BLUE_UPGRADE_THRESHOLD:
+                    apply_permanent_tier(2, "toast", f"升级为蓝卡：{word}", "🟦")
                     streak[word] = 0
             elif pre_type == CardType.BLUE_HYBRID:
-                if streak[word] >= BLUE_TO_GOLD_UPGRADE_THRESHOLD:
-                    card.temp_level = "gold"
-                    CombatEngine._emit(events, "toast", f"升级为金卡：{word}", "🟨")
+                if not db_upgraded and streak[word] >= BLUE_TO_GOLD_UPGRADE_THRESHOLD:
+                    apply_permanent_tier(4, "toast", f"升级为金卡：{word}", "🟨")
                     if not rewarded_this_answer:
                         CombatEngine._grant_red_card_from_pool(session_state, events, "蓝升金")
                         rewarded_this_answer = True
@@ -328,12 +340,10 @@ class CombatEngine:
 
                 ctype = card.card_type
                 if ctype == CardType.GOLD_SUPPORT and card.wrong_streak >= 1:
-                    card.temp_level = "blue"
-                    CombatEngine._emit(events, "warning", "🌟 金卡遗忘，降级为蓝卡")
+                    apply_permanent_tier(2, "warning", "🌟 金卡遗忘，降级为蓝卡", "🟦")
                     card.wrong_streak = 0
                 elif ctype == CardType.BLUE_HYBRID and card.wrong_streak >= 2:
-                    card.temp_level = "red"
-                    CombatEngine._emit(events, "warning", "🌟 蓝卡遗忘，降级为红卡")
+                    apply_permanent_tier(0, "warning", "🌟 蓝卡遗忘，降级为红卡", "🟥")
                     card.wrong_streak = 0
                 elif ctype == CardType.RED_BERSERK and card.wrong_streak >= 2:
                     card.is_blackened = True
@@ -394,6 +404,18 @@ class CombatEngine:
                 return CombatResult(events=events, enemy_dead=True, player_dead=player.is_dead(), should_rerun=True)
 
         intent = cs.enemy.tick()
+        if intent == "dead":
+            cs.current_card = None
+            cs.current_options = None
+            cs.turns += 1
+            cs.nunchaku_used = False
+            cs.extra_action_only_red = False
+            return CombatResult(
+                events=events,
+                enemy_dead=True,
+                player_dead=player.is_dead(),
+                should_rerun=True,
+            )
         if intent == "attack":
             damage = cs.enemy.attack
             if session_state.get("_item_shield", False):
@@ -453,7 +475,19 @@ class CombatEngine:
                 cs.extra_action_only_red = False
                 return CombatResult(events=events, enemy_dead=True, player_dead=player.is_dead(), should_rerun=True)
 
-        cs.enemy.tick()
+        intent = cs.enemy.tick()
+        if intent == "dead":
+            cs.current_card = None
+            cs.current_options = None
+            cs.turns += 1
+            cs.nunchaku_used = False
+            cs.extra_action_only_red = False
+            return CombatResult(
+                events=events,
+                enemy_dead=True,
+                player_dead=player.is_dead(),
+                should_rerun=True,
+            )
         cs.turns += 1
         cs.nunchaku_used = False
         cs.extra_action_only_red = False

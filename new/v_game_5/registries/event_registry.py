@@ -19,6 +19,7 @@ class EventConfig:
     description: str
     choices: List[EventChoice] = field(default_factory=list)
     flavor_text: str = ""
+    category: str = "good"
 
 
 EVENTS: Dict[str, EventConfig] = {
@@ -27,6 +28,7 @@ EVENTS: Dict[str, EventConfig] = {
         icon="⛲",
         description="泉水中浮现出一个单词的影子...",
         flavor_text="或许答对了可以拯救一张黑卡。",
+        category="good",
         choices=[
             EventChoice(text="填写单词（成功可恢复黑卡）", effect="fill_blank_test"),
             EventChoice(text="离开", effect="none", value=0),
@@ -36,6 +38,7 @@ EVENTS: Dict[str, EventConfig] = {
         name="古老卷轴",
         icon="📜",
         description="你发现了一张破损的卷轴，上面写满了神秘符文...",
+        category="good",
         choices=[
             EventChoice(text="阅读卷轴（-10 生命，+50 金币）", effect="trade", value={"hp": -10, "gold": 50}),
             EventChoice(text="带走卷轴（获得道具）", effect="item", value="SCROLL"),
@@ -46,6 +49,7 @@ EVENTS: Dict[str, EventConfig] = {
         name="神秘商人",
         icon="🧙",
         description="一个戴面具的商人出现在你面前...",
+        category="good",
         choices=[
             EventChoice(text="购买强化（30 金币 → +10 最大生命）", effect="max_hp", value=10, cost_gold=30),
             EventChoice(text="购买药水（20 金币 → +40 生命）", effect="heal", value=40, cost_gold=20),
@@ -56,6 +60,7 @@ EVENTS: Dict[str, EventConfig] = {
         name="祭坛祈愿",
         icon="⛩️",
         description="古老的祭坛似乎蕴含着某种力量...",
+        category="good",
         choices=[
             EventChoice(text="献祭生命（-20 生命，获得随机圣遗物）", effect="relic", value="random", cost_gold=0),
             EventChoice(text="献祭金币（50 金币，回满生命）", effect="full_heal", value=0, cost_gold=50),
@@ -66,6 +71,7 @@ EVENTS: Dict[str, EventConfig] = {
         name="遗忘宝箱",
         icon="🧰",
         description="一个被遗忘的宝箱静静躺在角落...似乎有危险的气息。",
+        category="bad",
         choices=[
             EventChoice(text="打开宝箱（50% 概率：-20 生命 / +30~50 金币）", effect="risky_treasure"),
             EventChoice(text="谨慎离开", effect="none", value=0),
@@ -75,6 +81,7 @@ EVENTS: Dict[str, EventConfig] = {
         name="铁匠营地",
         icon="⚒️",
         description="一个流浪铁匠在此扎营...",
+        category="good",
         choices=[
             EventChoice(text="休息（+30 生命）", effect="heal", value=30),
             EventChoice(text="升级蓝卡（100 金币，蓝卡附加回血效果）", effect="upgrade_blue_cards", cost_gold=100),
@@ -86,6 +93,7 @@ EVENTS: Dict[str, EventConfig] = {
         icon="🧍",
         description="前方似乎躺着一个人...",
         flavor_text="不知发生了什么，但包里可能有好东西。",
+        category="bad",
         choices=[
             EventChoice(text="迅速远离", effect="none", value=0),
             EventChoice(text="翻找背包", effect="adventurer_loot"),
@@ -96,8 +104,19 @@ EVENTS: Dict[str, EventConfig] = {
         icon="📖",
         description="一本古旧的书静静躺在你面前...",
         flavor_text="书页间似乎飘散着奇异的气息。",
+        category="bad",
         choices=[
             EventChoice(text="翻阅", effect="book_read"),
+            EventChoice(text="离开", effect="none", value=0),
+        ],
+    ),
+    "GRAVEYARD": EventConfig(
+        name="乱葬岗",
+        icon="🪦",
+        description="雾气缭绕的乱葬岗中传来低语，你感到一阵寒意。",
+        category="bad",
+        choices=[
+            EventChoice(text="前往", effect="graveyard_enter"),
             EventChoice(text="离开", effect="none", value=0),
         ],
     ),

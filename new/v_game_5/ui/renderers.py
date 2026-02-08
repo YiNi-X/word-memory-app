@@ -329,6 +329,17 @@ def render_combat(resolve_node_callback: Callable, check_death_callback: Callabl
         
         # 根据怪物类型设置属性
         from config import ENEMY_HP_ELITE
+        forced_enemy = st.session_state.get("forced_enemy")
+
+        def _select_enemy():
+            if forced_enemy:
+                forced_enemy.is_elite = True
+                return forced_enemy
+            return Enemy(
+                level=st.session_state.game_map.current_node.level,
+                is_elite=(st.session_state.game_map.current_node.type == NodeType.ELITE),
+            )
+
         if len(player.deck) > player.deck_limit:
             if 'preparation_selected' not in st.session_state:
                 _render_preparation()
@@ -339,16 +350,19 @@ def render_combat(resolve_node_callback: Callable, check_death_callback: Callabl
                 del st.session_state.preparation_selected
                 st.session_state.card_combat = CardCombatState(
                     player=player,
-                    enemy=Enemy(level=st.session_state.game_map.current_node.level, is_elite=(st.session_state.game_map.current_node.type == NodeType.ELITE)),
+                    enemy=_select_enemy(),
                     deck=selected_deck
                 )
         else:
             # 自动全带
             st.session_state.card_combat = CardCombatState(
                 player=player,
-                enemy=Enemy(level=st.session_state.game_map.current_node.level, is_elite=(st.session_state.game_map.current_node.type == NodeType.ELITE)),
+                enemy=_select_enemy(),
                 deck=player.deck.copy()
             )
+
+        if forced_enemy:
+            del st.session_state.forced_enemy
 
     cs = st.session_state.card_combat
     
@@ -407,14 +421,11 @@ def _complete_combat_victory(cs: CardCombatState, resolve_node_callback: Callabl
     player.add_gold(gold_reward)
     player.advance_room()
     
-    # 如果接近 Boss 层，启动后台预加载
+    # 如果战斗已耗尽，启动 Boss 预加载
     game_map = st.session_state.get('game_map')
-    if game_map:
-        from config import TOTAL_FLOORS
-        if game_map.floor >= TOTAL_FLOORS - 1:
-            player = st.session_state.player
-            words = [{"word": c.word, "meaning": c.meaning} for c in player.deck]
-            BossPreloader.start_preload(words)
+    if game_map and game_map.normal_combats_remaining == 0 and game_map.elite_combats_remaining == 0:
+        words = [{"word": c.word, "meaning": c.meaning} for c in player.deck]
+        BossPreloader.start_preload(words)
     
     # 记录本局使用过的卡牌，供下局轮换
     if 'card_combat' in st.session_state:
@@ -433,7 +444,12 @@ def _complete_combat_victory(cs: CardCombatState, resolve_node_callback: Callabl
     resolve_node_callback()
 
 
+CURSED_RELIC_IDS = {"CURSED_BLOOD", "MONKEY_PAW", "UNDYING_CURSE", "CURSE_MASK"}
+
+
 def _apply_relic_on_gain(player, relic_id: str):
+    if relic_id in CURSED_RELIC_IDS:
+        st.warning("你深深地感到不安")
     if relic_id == "UNDYING_CURSE":
         for c in player.deck:
             c.is_blackened = True
@@ -943,12 +959,54 @@ def render_event(resolve_node_callback: Callable):
         all_events = EventRegistry.get_all()
         available_ids = [eid for eid in all_events.keys() if eid not in st.session_state.seen_events]
         
-        # 如果所有事件都遇到过了，重置袋子
-        if not available_ids:
+        def _is_cursed_relic(relic_id: str) -> bool:
+            from registries import RelicRegistry
+            if relic_id in CURSED_RELIC_IDS:
+                return True
+            if "CURSE" in relic_id.upper():
+                return True
+            relic = RelicRegistry.get(relic_id)
+            if relic and "诅咒" in relic.name:
+                return True
+            return False
+
+        def _pick_event_id() -> str:
+            nonlocal available_ids
+            if not available_ids:
+                st.session_state.seen_events = set()
+                available_ids = list(all_events.keys())
+
+            good_available = [eid for eid in available_ids if all_events[eid].category == "good"]
+            bad_available = [eid for eid in available_ids if all_events[eid].category == "bad"]
+
+            good_weight = 1
+            bad_weight = 1
+
+            last_type = st.session_state.get("last_node_type")
+            if last_type in (NodeType.COMBAT, NodeType.ELITE):
+                good_weight += 1
+
+            non_combat_streak = st.session_state.game_map.non_combat_streak
+            if non_combat_streak >= 2:
+                bad_weight += (non_combat_streak - 1)
+
+            if any(_is_cursed_relic(rid) for rid in player.relics):
+                bad_weight += 1
+
+            if good_available and bad_available:
+                category = random.choices(["good", "bad"], weights=[good_weight, bad_weight], k=1)[0]
+                pool = good_available if category == "good" else bad_available
+                return random.choice(pool)
+            if good_available:
+                return random.choice(good_available)
+            if bad_available:
+                return random.choice(bad_available)
+
             st.session_state.seen_events = set()
             available_ids = list(all_events.keys())
-        
-        event_id = random.choice(available_ids)
+            return random.choice(available_ids)
+
+        event_id = _pick_event_id()
         st.session_state.seen_events.add(event_id)
         
         node.data['event_id'] = event_id
@@ -969,6 +1027,9 @@ def render_event(resolve_node_callback: Callable):
         return
     elif subphase == "book_read":
         _render_mysterious_book(resolve_node_callback)
+        return
+    elif subphase == "graveyard":
+        _render_graveyard(resolve_node_callback)
         return
 
     st.markdown(event_data.description)
@@ -1064,6 +1125,11 @@ def render_event(resolve_node_callback: Callable):
                     return
                 elif effect == "book_read":
                     st.session_state.event_subphase = "book_read"
+                    st.rerun()
+                    return
+                elif effect == "graveyard_enter":
+                    st.session_state.event_subphase = "graveyard"
+                    st.session_state.graveyard_explore_count = 0
                     st.rerun()
                     return
                 elif effect == "risky_treasure":
@@ -1189,23 +1255,9 @@ def _render_adventurer_loot(resolve_node_callback):
         st.error("👹 陷阱！尸体站了起来！此地不宜久留...")
         if st.button("进入战斗 (消耗一次小怪次数)"):
             # 逻辑上，我们应该把当前的 EVENT 节点变为 COMBAT
-            # 且为了守恒，应该移除未来队列中的一个 COMBAT (如果实现复杂，暂且忽略移除，仅触发战斗)
+            # 触发战斗并消耗一次小怪次数
             st.session_state.game_map.current_node.type = NodeType.COMBAT
-            
-            # v6.0 守恒定律：消耗一次未来的小怪配额 (从队列中移除一个 COMBAT)
-            # 这样总战斗数保持不变 (10场)
-            game_map = st.session_state.game_map
-            if NodeType.COMBAT in game_map.node_queue[game_map.floor:]:
-                 # 在剩余队列中找到第一个 COMBAT 并移除
-                 # 注意 game_map.node_queue 是全量队列， game_map.floor 是当前索引
-                 # 我们要移除 index >= floor 的第一个 COMBAT
-                 for i in range(game_map.floor, len(game_map.node_queue)):
-                     if game_map.node_queue[i] == NodeType.COMBAT:
-                         game_map.node_queue.pop(i)
-                         # 补一个 Filler (Event/Rest) 以保持总层数
-                         game_map.node_queue.insert(i, NodeType.EVENT)
-                         st.toast("⚠️ 未来的某场战斗被提前了...", icon="⚔️")
-                         break
+            st.toast("⚠️ 事件战斗触发", icon="⚔️")
             
             del st.session_state.adv_loot_result
             st.session_state.event_subphase = None
@@ -1266,6 +1318,81 @@ def _render_mysterious_book(resolve_node_callback):
         player.advance_room()
         resolve_node_callback()
         st.rerun()
+
+
+def _clear_graveyard_state():
+    if 'graveyard_explore_count' in st.session_state:
+        del st.session_state.graveyard_explore_count
+    st.session_state.event_subphase = None
+
+
+def _render_graveyard(resolve_node_callback):
+    """乱葬岗：可多次探究"""
+    player = st.session_state.player
+    st.subheader("🪦 乱葬岗")
+    st.caption("阴风阵阵，你能感觉到某种东西在暗中凝视。")
+
+    explore_count = st.session_state.get('graveyard_explore_count', 0)
+    st.caption(f"已探究次数：{explore_count}")
+
+    col_a, col_b = st.columns(2)
+    with col_a:
+        if st.button("探究", key="graveyard_explore", use_container_width=True):
+            explore_count += 1
+            st.session_state.graveyard_explore_count = explore_count
+            ghost_chance = min(0.15 + 0.10 * (explore_count - 1), 0.70)
+
+            if random.random() < ghost_chance:
+                st.error("👻 幽灵现身！")
+                _pause(0.8)
+                _clear_graveyard_state()
+                st.session_state.game_map.current_node.type = NodeType.ELITE
+                st.session_state.forced_enemy = Enemy(
+                    name="幽灵",
+                    level=st.session_state.game_map.current_node.level,
+                    hp=999,
+                    max_hp=999,
+                    attack=10,
+                    is_elite=True,
+                    use_fixed_stats=True,
+                    fixed_attack=10,
+                    fixed_timer=2,
+                    attack_interval=2,
+                    max_turns=10,
+                )
+                st.rerun()
+                return
+
+            roll = random.random()
+            if roll < 0.05:
+                from registries import RelicRegistry
+                pool = [rid for rid in RelicRegistry.get_pool("low") if rid not in player.relics]
+                if pool:
+                    rid = random.choice(pool)
+                    relic = RelicRegistry.get(rid)
+                    player.relics.append(rid)
+                    _apply_relic_on_gain(player, rid)
+                    name = relic.name if relic else rid
+                    st.toast(f"🏆 发现圣遗物：{name}", icon="🪙")
+                else:
+                    st.info("暂无可用圣遗物")
+            elif roll < 0.40:
+                gold = random.randint(15, 20)
+                player.add_gold(gold)
+                st.toast(f"💰 发现金币：{gold}", icon="💰")
+            else:
+                st.info("什么也没发生。")
+
+            _pause(0.6)
+            st.rerun()
+            return
+
+    with col_b:
+        if st.button("逃跑", key="graveyard_escape", use_container_width=True):
+            _clear_graveyard_state()
+            player.advance_room()
+            resolve_node_callback()
+            st.rerun()
 
 
 def render_shop(resolve_node_callback: Callable):
@@ -1468,11 +1595,11 @@ def _render_camp_upgrade(resolve_node_callback):
         return
 
     if 'upgrade_target' not in st.session_state:
-        st.markdown("选择一张卡牌进行挑战 (拼写正确即可永久升阶)")
+        st.markdown("选择一张卡牌进行挑战（仅显示中文释义，拼写正确即可永久升阶）")
         cols = st.columns(min(4, len(upgradable)))
         for i, card in enumerate(upgradable[:8]):
             with cols[i % 4]:
-                if st.button(f"{card.word} ({card.card_type.icon})", key=f"up_sel_{i}"):
+                if st.button(f"{card.meaning}", key=f"up_sel_{i}"):
                     st.session_state.upgrade_target = card
                     st.rerun()
     else:
@@ -1485,6 +1612,9 @@ def _render_camp_upgrade(resolve_node_callback):
                 # 永久升阶
                 old_tier = card.tier
                 card.tier = min(4, card.tier + 2) # 红(0)->蓝(2)->金(4)
+                db = st.session_state.db
+                current_room = st.session_state.game_map.floor if st.session_state.get("game_map") else 0
+                db.set_word_tier(st.session_state.player.id, card.word, card.tier, current_room)
                 if old_tier in (2, 3) and card.tier >= 4:
                     _grant_red_card_from_pool("蓝升金")
                 st.success(f"🎊 成功！{card.word} 已永久升级！")

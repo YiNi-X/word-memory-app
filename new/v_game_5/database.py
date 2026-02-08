@@ -484,6 +484,17 @@ class GameDB:
                     (new_tier, new_errors, current_room, row['id']))
                 
                 return {"upgraded": False, "new_tier": new_tier, "downgraded": new_tier < current_tier}
+
+    def set_word_tier(self, player_id: int, word: str, tier: int, current_room: int = 0) -> bool:
+        """强制设置单词等级（用于永久升级）"""
+        with self._get_conn() as conn:
+            cur = conn.execute(
+                """UPDATE deck SET
+                    tier = ?, consecutive_correct = 0, last_seen_room = ?, priority = 'normal'
+                    WHERE player_id = ? AND word = ?""",
+                (tier, current_room, player_id, word),
+            )
+            return cur.rowcount > 0
     
     # ==========================================
     # 存档系统

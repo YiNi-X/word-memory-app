@@ -206,9 +206,28 @@ class Enemy:
     intent: str = "attack"
     is_elite: bool = False  # 是否精英怪
     is_boss: bool = False   # 是否 Boss (虽然 Boss 战单独处理，但为了 registry 兼容需要此字段)
-    
+    use_fixed_stats: bool = False  # Use provided stats instead of scaling by level.
+    max_turns: Optional[int] = None  # Auto-die after this many enemy turns.
+    attack_interval: Optional[int] = None  # Fixed attack interval.
+    fixed_attack: Optional[int] = None  # Fixed attack damage.
+    fixed_timer: Optional[int] = None  # Initial countdown for fixed attacks.
+
     def __post_init__(self):
         from config import ENEMY_HP_BASE, ENEMY_HP_ELITE, ENEMY_HP_GROWTH, ENEMY_ATTACK
+        if self.use_fixed_stats:
+            if self.fixed_attack is None:
+                self.fixed_attack = self.attack
+            self.base_attack = self.attack
+            self.attack = self.fixed_attack
+            if self.fixed_timer is None:
+                self.fixed_timer = self.action_timer
+            if self.attack_interval is None:
+                self.attack_interval = self.fixed_timer
+            self.action_timer = self.fixed_timer
+            self.current_timer = self.fixed_timer
+            self.max_hp = max(self.max_hp, self.hp)
+            self.turns_elapsed = 0
+            return
         if self.is_elite:
             base_hp = ENEMY_HP_ELITE + max(0, self.level - 1) * ENEMY_HP_GROWTH
         else:
@@ -220,8 +239,22 @@ class Enemy:
         self.action_timer = random.randint(3, 5)
         self.current_timer = self.action_timer
         self.turns_elapsed = 0
+
     def tick(self) -> str:
         self.turns_elapsed += 1
+        if self.max_turns is not None and self.turns_elapsed > self.max_turns:
+            self.hp = 0
+            return "dead"
+
+        if self.use_fixed_stats:
+            self.current_timer -= 1
+            if self.current_timer <= 0:
+                self.current_timer = self.attack_interval or self.fixed_timer or 1
+                if self.fixed_attack is not None:
+                    self.attack = self.fixed_attack
+                return "attack"
+            return "charge"
+
         self.current_timer -= 1
         if self.current_timer <= 0:
             self.current_timer = random.randint(3, 5)

@@ -359,6 +359,14 @@ class GameManager:
         for key in ['card_combat', 'boss_state']:
             if key in st.session_state:
                 del st.session_state[key]
+
+        node = ms.current_node
+        if node:
+            st.session_state.last_node_type = node.type
+        if node and node.type in (NodeType.EVENT, NodeType.SHOP, NodeType.REST):
+            ms.non_combat_streak += 1
+        else:
+            ms.non_combat_streak = 0
         
         # 保存进度
         player = st.session_state.player
@@ -369,7 +377,7 @@ class GameManager:
             state=self._build_run_state(),
         )
         
-        if ms.floor >= ms.total_floors:
+        if ms.current_node and ms.current_node.type == NodeType.BOSS:
             self.end_run(victory=True)
         elif trigger_draft:
             # 战后抓牌
@@ -516,4 +524,6 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 render_game()
+
+##describe：事件——良性/不良  单词库——本局游戏池/玩家牌组  圣遗物——诅咒/非诅咒 卡牌——红/蓝/金  战斗——小怪/精英/Boss  ##
 

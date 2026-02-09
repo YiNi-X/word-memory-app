@@ -12,12 +12,12 @@ MODEL_ID = "kimi-k2.5"
 DB_NAME = "vocab_spire_v5.db"
 
 # 游戏平衡
-TOTAL_FLOORS = 22  # 总层数 (10小+6精+5事+1Boss = 22)
+TOTAL_FLOORS = 22  # 总层数 (8小+5精+8事+1Boss = 22)
 INITIAL_GOLD = 50  # 每局初始金币
 
 # 强制战斗配置
-MANDATORY_NORMAL_COMBATS = 10  # 必须遇到的小怪数量
-MANDATORY_ELITE_COMBATS = 6   # 必须遇到的精英数量
+MANDATORY_NORMAL_COMBATS = 8   # 必须遇到的小怪数量
+MANDATORY_ELITE_COMBATS = 5    # 必须遇到的精英数量
 MAX_NON_COMBAT_STREAK = 2     # 连续非战斗最大允许次数
 UTILITY_OFFER_BASE = 0.8      # 非战斗出现基准概率
 UTILITY_OFFER_DECAY = 0.3     # 连续非战斗时的概率衰减
@@ -44,19 +44,12 @@ INITIAL_DECK_SIZE = 9   # 初始抓牌数量 (Tower Prep)
 
 # 局内升级阈值
 IN_GAME_UPGRADE_THRESHOLD = 3  # ??????
-RED_TO_BLUE_UPGRADE_THRESHOLD = 3
-BLUE_TO_GOLD_UPGRADE_THRESHOLD = 2
+RED_TO_BLUE_UPGRADE_THRESHOLD = 4
+BLUE_TO_GOLD_UPGRADE_THRESHOLD = 3
 
 # 卡牌效果
-ATTACK_DAMAGE = 15      # ????
 ATTACK_BACKFIRE = 5     # ????
-DEFENSE_BLOCK = 8        # defense block
-DEFENSE_DAMAGE = 8      # ????
-DEFENSE_HEAL = 5        # ????(?????)
-BLACK_DAMAGE = 20       # ????
 BLACK_BACKFIRE = 15     # ??????
-UTILITY_DRAW = 2        # ????
-UTILITY_DAMAGE_MULT = 2 # ??????
 GOLD_CARD_USES = 1      # gold uses per combat
 
 # 敌人配置

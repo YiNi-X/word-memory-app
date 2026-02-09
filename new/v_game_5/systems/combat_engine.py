@@ -247,9 +247,14 @@ class CombatEngine:
                             c.tier = new_tier
                             if not c.is_blackened:
                                 c.temp_level = None
-                    if not rewarded_this_answer and old_tier in (2, 3) and new_tier >= 4:
-                        CombatEngine._grant_red_card_from_pool(session_state, events, "蓝升金")
-                        rewarded_this_answer = True
+                if not rewarded_this_answer and old_tier in (2, 3) and new_tier >= 4:
+                    CombatEngine._grant_red_card_from_pool(session_state, events, "蓝升金")
+                    rewarded_this_answer = True
+                if new_tier is not None and new_tier >= 4:
+                    gold_words = session_state.get("run_gold_upgraded_words", [])
+                    if card.word not in gold_words:
+                        gold_words.append(card.word)
+                        session_state.run_gold_upgraded_words = gold_words
 
         def apply_permanent_tier(new_tier: int, level: str, label: str, icon: str):
             card.tier = new_tier
@@ -270,6 +275,11 @@ class CombatEngine:
                     priority=next_priority,
                 )
             CombatEngine._emit(events, level, label, icon)
+            if new_tier >= 4:
+                gold_words = session_state.get("run_gold_upgraded_words", [])
+                if card.word not in gold_words:
+                    gold_words.append(card.word)
+                    session_state.run_gold_upgraded_words = gold_words
 
         if correct:
             CombatEngine._emit(events, "success", "✅ 正确！")

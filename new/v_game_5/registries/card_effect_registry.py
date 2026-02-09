@@ -245,8 +245,6 @@ class CardEffectRegistry:
             if correct:
                 if card_type_name == "GOLD_SUPPORT":
                     dmg = 10
-                    if ctx.cs.next_card_multiplier > 1:
-                        dmg *= ctx.cs.next_card_multiplier
                     ctx.enemy.take_damage(dmg)
                     _emit(ctx, "toast", f"首领受到 {dmg} 伤害")
                     _gold_random_effect(ctx)

@@ -380,8 +380,6 @@ def render_combat(resolve_node_callback: Callable, check_death_callback: Callabl
     if cs.phase == CombatPhase.BATTLE:
         _render_battle_phase(cs, resolve_node_callback, check_death_callback)
     elif cs.phase == CombatPhase.VICTORY:
-        st.balloons()
-
         is_elite = cs.enemy.is_elite
 
         if is_elite and st.session_state.get("elite_relic_pending"):
@@ -395,14 +393,15 @@ def render_combat(resolve_node_callback: Callable, check_death_callback: Callabl
             st.session_state.combat_recorded = True
 
         if not st.session_state.get("combat_victory_rewarded"):
-            reward_count = 2 if is_elite else 1
-            reward_cards = _take_cards_from_pool(reward_count, prefer_red_only=True)
-            if reward_cards:
-                for card in reward_cards:
-                    st.session_state.player.add_card_to_deck(card)
-                st.toast(f"🎴 获得 {len(reward_cards)} 张红卡！", icon="🟥")
-            else:
-                st.info("词池中没有可用红卡")
+            if is_elite:
+                reward_count = 1
+                reward_cards = _take_cards_from_pool(reward_count, prefer_red_only=True)
+                if reward_cards:
+                    for card in reward_cards:
+                        st.session_state.player.add_card_to_deck(card)
+                    st.toast(f"🎴 获得 {len(reward_cards)} 张红卡！", icon="🟥")
+                else:
+                    st.info("词池中没有可用红卡")
             st.session_state.combat_victory_rewarded = True
 
             if is_elite:
@@ -1141,13 +1140,10 @@ def render_boss(resolve_node_callback: Callable, check_death_callback: Callable)
     if bs.phase == "article":
         content = _boss_article_content(bs.article)
         title = (bs.article or {}).get("title", "Boss Chronicle")
-        summary_cn = _boss_article_summary(bs.article)
         st.markdown("## 👹 语法巨像")
         with st.expander("首领本体", expanded=True):
             st.markdown(f"### {title}")
             st.markdown(content)
-            if summary_cn:
-                st.caption(summary_cn)
             missing = (bs.article or {}).get("missing_words") or []
             if missing:
                 st.caption(f"未覆盖词数: {len(missing)}")
@@ -1278,7 +1274,27 @@ def render_boss(resolve_node_callback: Callable, check_death_callback: Callable)
 
     if bs.phase == "victory":
         st.balloons()
+        st.snow()
         st.success("首领已被击败")
+        st.subheader("📜 战斗总结")
+        content = _boss_article_content(bs.article)
+        translation = (bs.article or {}).get("translation_cn") or _boss_article_summary(bs.article)
+        with st.expander("英文原文", expanded=False):
+            if content:
+                st.markdown(content)
+            else:
+                st.caption("暂无原文")
+        with st.expander("中文译文", expanded=False):
+            if translation:
+                st.markdown(translation)
+            else:
+                st.caption("暂无译文")
+        mastered = st.session_state.get("run_gold_upgraded_words", [])
+        st.subheader("🏅 您已掌握以下单词")
+        if mastered:
+            st.markdown("、".join(mastered))
+        else:
+            st.caption("本局暂无新掌握的金卡单词")
         if st.button("获取奖励（+100金币）", type="primary"):
             player.add_gold(100)
             player.advance_room()
@@ -1970,10 +1986,6 @@ def render_rest(resolve_node_callback: Callable):
     """营地 v6.0"""
     st.header("🔥 铁匠营地")
     player = st.session_state.player
-    
-    if st.session_state.get('rest_phase') == 'upgrade':
-        _render_camp_upgrade(resolve_node_callback)
-        return
 
     col1, col2, col3 = st.columns(3)
     with col1:
@@ -2008,12 +2020,15 @@ def render_rest(resolve_node_callback: Callable):
                 st.rerun()
 
     with col3:
-        with st.container(border=True):
-            st.markdown("### 🆙 词汇淬炼")
-            st.caption("通过拼写测试，永久提升卡牌阶级")
-            if st.button("开始挑战", use_container_width=True):
-                st.session_state.rest_phase = 'upgrade'
-                st.rerun()
+        if st.session_state.get('rest_phase') == 'upgrade':
+            _render_camp_upgrade(resolve_node_callback)
+        else:
+            with st.container(border=True):
+                st.markdown("### 🆙 词汇淬炼")
+                st.caption("通过拼写测试，永久提升卡牌阶级")
+                if st.button("开始挑战", use_container_width=True):
+                    st.session_state.rest_phase = 'upgrade'
+                    st.rerun()
 
 def _render_camp_upgrade(resolve_node_callback):
     """营地卡牌升阶逻辑"""
@@ -2066,6 +2081,11 @@ def _render_camp_upgrade(resolve_node_callback):
                 )
                 if old_tier in (2, 3) and card.tier >= 4:
                     _grant_red_card_from_pool("蓝升金")
+                if card.tier >= 4:
+                    gold_words = st.session_state.get("run_gold_upgraded_words", [])
+                    if card.word not in gold_words:
+                        gold_words.append(card.word)
+                        st.session_state.run_gold_upgraded_words = gold_words
                 st.success(f"🎊 成功！{card.word} 已永久升级！")
                 del st.session_state.upgrade_target
                 _pause(1.0)

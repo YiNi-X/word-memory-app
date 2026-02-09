@@ -102,6 +102,27 @@ class GameManager:
             })
         return serialized
 
+    def _build_cards(self, rows: list) -> list:
+        cards = []
+        for item in rows or []:
+            if isinstance(item, WordCard):
+                cards.append(item)
+                continue
+            if not isinstance(item, dict):
+                continue
+            word = item.get("word")
+            if not word:
+                continue
+            cards.append(
+                WordCard(
+                    word=word,
+                    meaning=item.get("meaning", ""),
+                    tier=item.get("tier", 0),
+                    priority=item.get("priority", "normal"),
+                )
+            )
+        return cards
+
     def _build_run_state(self) -> dict:
         player = st.session_state.player
         game_map = st.session_state.get("game_map")
@@ -114,6 +135,7 @@ class GameManager:
             "relics": list(player.relics),
             "inventory": list(player.inventory),
             "game_word_pool": self._serialize_card_pool(st.session_state.get("game_word_pool", [])),
+            "run_gold_upgraded_words": list(st.session_state.get("run_gold_upgraded_words", [])),
             "map_state": map_state,
         }
 
@@ -150,28 +172,14 @@ class GameManager:
         initial_deck = db.get_initial_deck_from_pool(game_pool, INITIAL_DECK_RED, INITIAL_DECK_BLUE, INITIAL_DECK_GOLD)
         
         # 3. 转换为 WordCard
-        deck_cards = []
-        for w in initial_deck:
-            deck_cards.append(WordCard(
-                word=w['word'],
-                meaning=w['meaning'],
-                tier=w.get('tier', 0),
-                priority=w.get('priority', 'normal')
-            ))
+        deck_cards = self._build_cards(initial_deck)
         
         # 4. 计算剩余池 (用于战利品抽取)
         deck_words = {c.word for c in deck_cards}
         remaining_pool = [w for w in game_pool if w['word'] not in deck_words]
         
         # 转换为 WordCard 列表
-        remaining_pool_cards = []
-        for w in remaining_pool:
-            remaining_pool_cards.append(WordCard(
-                word=w['word'],
-                meaning=w['meaning'],
-                tier=w.get('tier', 0),
-                priority=w.get('priority', 'normal')
-            ))
+        remaining_pool_cards = self._build_cards(remaining_pool)
         
         # 5. 初始化玩家 (空deck，待Prep)
         st.session_state.player = Player(
@@ -185,6 +193,7 @@ class GameManager:
         all_pool_cards = deck_cards + remaining_pool_cards
         st.session_state.full_draft_pool = all_pool_cards
         st.session_state.in_game_streak = {}
+        st.session_state.run_gold_upgraded_words = []
         
         # 7. 初始化地图
         st.session_state.game_map = MapSystem(total_floors=TOTAL_FLOORS)
@@ -229,13 +238,7 @@ class GameManager:
             return
         
         # 恢复卡组
-        deck_cards = []
-        for w in save.get('deck', []):
-            deck_cards.append(WordCard(
-                word=w['word'],
-                meaning=w['meaning'],
-                tier=w.get('tier', 0)
-            ))
+        deck_cards = self._build_cards(save.get('deck', []))
         state = save.get("state") or {}
         gold = state.get("gold", INITIAL_GOLD)
         max_hp = state.get("max_hp", 100)
@@ -270,26 +273,13 @@ class GameManager:
         
         # v6.0 恢复本局游戏词池 (用于战利品奖励)
         if "game_word_pool" in state:
-            st.session_state.game_word_pool = [
-                WordCard(
-                    word=w['word'],
-                    meaning=w['meaning'],
-                    tier=w.get('tier', 0),
-                    priority=w.get('priority', 'normal'),
-                ) for w in (state.get("game_word_pool") or [])
-            ]
+            st.session_state.game_word_pool = self._build_cards(state.get("game_word_pool") or [])
         else:
             from config import GAME_POOL_RED, GAME_POOL_BLUE, GAME_POOL_GOLD
             game_pool = st.session_state.db.get_game_pool(player_id, GAME_POOL_RED, GAME_POOL_BLUE, GAME_POOL_GOLD)
             deck_words = {c.word for c in deck_cards}
-            st.session_state.game_word_pool = [
-                WordCard(
-                    word=w['word'],
-                    meaning=w['meaning'],
-                    tier=w.get('tier', 0),
-                    priority=w.get('priority', 'normal')
-                ) for w in game_pool if w['word'] not in deck_words
-            ]
+            filtered_pool = [w for w in game_pool if w.get('word') not in deck_words]
+            st.session_state.game_word_pool = self._build_cards(filtered_pool)
 
         for key in ('pending_card_purchase', 'pending_card_price', 'shop_card_choices', 'shop_card_choice_type'):
             if key in st.session_state:
@@ -546,58 +536,6 @@ st.markdown("""
     .card-blue { border-left: 4px solid #3498db; }
     .card-gold { border-left: 4px solid #f39c12; }
 
-    @keyframes bossMaskIn {
-        from { opacity: 0; }
-        to { opacity: 1; }
-    }
-    @keyframes bossCardPulse {
-        0% { transform: translateY(6px) scale(0.98); box-shadow: 0 0 0 rgba(0,0,0,0.0); }
-        100% { transform: translateY(0) scale(1); box-shadow: 0 20px 60px rgba(0,0,0,0.35); }
-    }
-    @keyframes bossAlertSweep {
-        0% { background-position: -180% 0; }
-        100% { background-position: 180% 0; }
-    }
-    .boss-interrupt-mask {
-        position: fixed;
-        inset: 0;
-        background: rgba(8, 12, 20, 0.56);
-        backdrop-filter: blur(2px);
-        z-index: 900;
-        animation: bossMaskIn 220ms ease-out;
-        pointer-events: none;
-    }
-    .boss-interrupt-pulse {
-        position: absolute;
-        inset: 0;
-        background:
-            radial-gradient(circle at 50% 36%, rgba(255, 96, 64, 0.10), rgba(15, 20, 32, 0.02) 42%, transparent 68%);
-    }
-    .boss-interrupt-shell {
-        position: relative;
-        width: min(820px, 92vw);
-        margin: 8px auto 14px auto;
-        z-index: 901;
-    }
-    .boss-interrupt-card {
-        border-radius: 16px;
-        padding: 14px 16px;
-        border: 1px solid rgba(255,255,255,0.18);
-        background: linear-gradient(160deg, rgba(20,26,40,0.95), rgba(12,17,28,0.96));
-        animation: bossCardPulse 260ms ease-out;
-    }
-    .boss-interrupt-alert {
-        display: inline-block;
-        padding: 4px 10px;
-        border-radius: 999px;
-        font-size: 12px;
-        font-weight: 700;
-        letter-spacing: 0.6px;
-        text-transform: uppercase;
-        background: linear-gradient(90deg, rgba(255,255,255,0.1), rgba(255,255,255,0.35), rgba(255,255,255,0.1));
-        background-size: 180% 100%;
-        animation: bossAlertSweep 1.8s linear infinite;
-    }
     .boss-interrupt-meta {
         margin-top: 2px;
         font-size: 13px;
@@ -615,20 +553,6 @@ st.markdown("""
         font-size: 12px;
         opacity: 0.82;
     }
-    .boss-skill-vocab .boss-interrupt-card {
-        border-color: rgba(255, 120, 88, 0.62);
-        box-shadow: 0 0 0 1px rgba(255, 90, 64, 0.20) inset;
-    }
-    .boss-skill-vocab .boss-interrupt-alert {
-        color: #ffe4de;
-    }
-    .boss-skill-reading .boss-interrupt-card {
-        border-color: rgba(84, 182, 255, 0.60);
-        box-shadow: 0 0 0 1px rgba(50, 152, 255, 0.20) inset;
-    }
-    .boss-skill-reading .boss-interrupt-alert {
-        color: #e4f2ff;
-    }
     .boss-interrupt-panel {
         display: grid;
         gap: 8px;
@@ -640,14 +564,6 @@ st.markdown("""
         color: #ffe4de;
     }
     @media (max-width: 768px) {
-        .boss-interrupt-shell {
-            width: min(94vw, 94vw);
-            margin-top: 4px;
-        }
-        .boss-interrupt-card {
-            padding: 12px 12px;
-            border-radius: 12px;
-        }
         .boss-interrupt-question {
             font-size: 15px;
             max-height: 150px;

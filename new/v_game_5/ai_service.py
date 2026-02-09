@@ -110,6 +110,7 @@ class CyberMind:
         title = str(raw.get("title") or "Boss Chronicle").strip()
         content = str(raw.get("content") or raw.get("article_english") or "").strip()
         summary_cn = str(raw.get("summary_cn") or raw.get("article_chinese") or "").strip()
+        translation_cn = str(raw.get("translation_cn") or raw.get("article_cn") or "").strip()
         if not content:
             return None
 
@@ -129,6 +130,7 @@ class CyberMind:
             "title": title,
             "content": content,
             "summary_cn": summary_cn,
+            "translation_cn": translation_cn,
             "all_target_words_used": len(missing_words) == 0,
             "missing_words": missing_words,
         }
@@ -208,13 +210,15 @@ class CyberMind:
 1.  **Context**: Create a coherent, engaging story (Cyberpunk, Medieval, or Lovecraftian theme) that naturally incorporates ALL the input words.
 2.  **Length**: 200-300 words.
 3.  **Formatting**: You MUST wrap every input word used in the text with double asterisks, e.g., **serendipity**.
-4.  **Translation**: Provide a concise Chinese summary of the story.
+4.  **Translation**: Provide a full Chinese translation of the story.
+5.  **Summary**: Provide a concise Chinese summary of the story.
 
 **Output Format**:
 Strictly return a valid JSON object:
 {
     "title": "Title of the story",
     "content": "The full story text with **highlighted** words...",
+    "translation_cn": "中文全文译文...",
     "summary_cn": "中文故事大意..."
 }"""
         raw = self._call(prompt, json.dumps({"words_list": word_list}, ensure_ascii=False))
@@ -322,6 +326,9 @@ class MockGenerator:
             "title": "Storm Above the Archive",
             "content": content,
             "summary_cn": "队伍在霓虹与古老符文交错的塔中追索线索，最终必须在语言风暴中击败守关者。",
+            "translation_cn": "霓虹雨倾泻在塔楼之上，反应堆下方的古老钟声回荡。"
+            " 队员们在锈蚀的终端与破碎的符印间追踪线索，"
+            + "当大门开启时，所有碎片汇聚成一道命令：在语言风暴中存活。",
             "all_target_words_used": len(missing) == 0,
             "missing_words": missing,
         }

@@ -813,26 +813,36 @@ def _normalize_boss_quizzes(quizzes: dict, words: list) -> dict:
 def _build_boss_quiz_queue(quizzes: dict) -> list:
     vocab = list((quizzes or {}).get("vocab_attacks", []))
     reading = list((quizzes or {}).get("boss_ultimates", []))
-    queue = []
-    queue.extend(vocab[:3])
-    queue.extend(reading[:2])
+    vocab_target = 5
+    reading_target = 3
 
-    if len(queue) < 5:
-        extras = vocab[3:] + reading[2:]
-        for item in extras:
-            queue.append(item)
-            if len(queue) >= 5:
-                break
+    vocab_selected = vocab[:vocab_target]
+    reading_selected = reading[:reading_target]
 
-    if len(queue) < 5:
+    if len(vocab_selected) < vocab_target or len(reading_selected) < reading_target:
         fallback = MockGenerator.generate_quiz([])
-        extras = fallback.get("vocab_attacks", []) + fallback.get("boss_ultimates", [])
-        for item in extras:
-            queue.append(item)
-            if len(queue) >= 5:
-                break
+        fallback_vocab = list(fallback.get("vocab_attacks", []))
+        fallback_reading = list(fallback.get("boss_ultimates", []))
 
-    return queue[:5]
+        if len(vocab_selected) < vocab_target:
+            need = vocab_target - len(vocab_selected)
+            vocab_selected.extend(fallback_vocab[:need])
+        if len(reading_selected) < reading_target:
+            need = reading_target - len(reading_selected)
+            reading_selected.extend(fallback_reading[:need])
+
+        if fallback_vocab:
+            idx = 0
+            while len(vocab_selected) < vocab_target:
+                vocab_selected.append(fallback_vocab[idx % len(fallback_vocab)])
+                idx += 1
+        if fallback_reading:
+            idx = 0
+            while len(reading_selected) < reading_target:
+                reading_selected.append(fallback_reading[idx % len(fallback_reading)])
+                idx += 1
+
+    return vocab_selected + reading_selected
 
 
 def _boss_init_combat_state(bs: BossState) -> CardCombatState:
@@ -910,56 +920,112 @@ def _render_boss_skill_interrupt_panel(bs: BossState, cs: CardCombatState, check
         bs.active_quiz = None
         return False
 
-    token = f"{bs.quiz_asked}-{cs.turns}"
-    panel_class = "boss-skill-vocab" if quiz_type == "vocab" else "boss-skill-reading"
     question = html.escape(str(quiz.get("question", "")))
-    st.markdown(
-        f"""
-<div class="boss-interrupt-mask" data-token="{token}">
-  <div class="boss-interrupt-pulse"></div>
-</div>
-<div class="boss-interrupt-shell {panel_class}" data-token="{token}">
-  <div class="boss-interrupt-card">
-    <div class="boss-interrupt-alert">技能打断</div>
-    <div class="boss-interrupt-meta">{label} · 第 {bs.quiz_asked + 1}/{bs.death_lock_until_quiz_count} 题</div>
-    <div class="boss-interrupt-question">{question}</div>
-    <div class="boss-interrupt-tip">技能处理中，暂不可出牌，请先完成应对。</div>
-  </div>
+    label_safe = html.escape(label)
+
+    token = f"{bs.quiz_asked}-{cs.turns}"
+    token_safe = token.replace("-", "_")
+    if st.session_state.get("_boss_shake_token") != token:
+        st.session_state._boss_shake_token = token
+        st.markdown(
+            f"""
+<style>
+@keyframes bossScreenShake_{token_safe} {{
+  0% {{ transform: translate(0, 0); }}
+  20% {{ transform: translate(-6px, 0); }}
+  40% {{ transform: translate(6px, 0); }}
+  60% {{ transform: translate(-4px, 0); }}
+  80% {{ transform: translate(4px, 0); }}
+  100% {{ transform: translate(0, 0); }}
+}}
+.stApp {{
+  animation: bossScreenShake_{token_safe} 0.35s ease-in-out;
+}}
+</style>
+""",
+            unsafe_allow_html=True,
+        )
+
+    submit = False
+    choice = None
+    if quiz_type == "reading":
+        col_main, col_side = st.columns([3, 1])
+        with col_side:
+            with st.container(border=True):
+                st.markdown("**英语原文**")
+                content = _boss_article_content(bs.article)
+                if content:
+                    st.markdown(content)
+                else:
+                    st.caption("暂无原文")
+        with col_main:
+            _, col_mid, _ = st.columns([1, 2, 1])
+            with col_mid:
+                with st.container(border=True):
+                    st.markdown(
+                        f"""
+<div class="boss-interrupt-panel">
+  <div class="boss-interrupt-title">技能打断</div>
+  <div class="boss-interrupt-meta">{label_safe} · 第 {bs.quiz_asked + 1}/{bs.death_lock_until_quiz_count} 题</div>
+  <div class="boss-interrupt-question">{question}</div>
+  <div class="boss-interrupt-tip">技能处理中，暂不可出牌，请先完成应对。</div>
 </div>
 """,
-        unsafe_allow_html=True,
-    )
+                        unsafe_allow_html=True,
+                    )
+                    choice = st.radio(
+                        "应对选项",
+                        options,
+                        key=f"boss_skill_choice_{bs.quiz_asked}_{cs.turns}",
+                        label_visibility="collapsed",
+                    )
+                    submit = st.button(
+                        "立即应对",
+                        type="primary",
+                        key=f"boss_skill_submit_{bs.quiz_asked}_{cs.turns}",
+                        use_container_width=True,
+                    )
+    else:
+        _, col_mid, _ = st.columns([1, 2, 1])
+        with col_mid:
+            with st.container(border=True):
+                st.markdown(
+                    f"""
+<div class="boss-interrupt-panel">
+  <div class="boss-interrupt-title">技能打断</div>
+  <div class="boss-interrupt-meta">{label_safe} · 第 {bs.quiz_asked + 1}/{bs.death_lock_until_quiz_count} 题</div>
+  <div class="boss-interrupt-question">{question}</div>
+  <div class="boss-interrupt-tip">技能处理中，暂不可出牌，请先完成应对。</div>
+</div>
+""",
+                    unsafe_allow_html=True,
+                )
+                choice = st.radio(
+                    "应对选项",
+                    options,
+                    key=f"boss_skill_choice_{bs.quiz_asked}_{cs.turns}",
+                    label_visibility="collapsed",
+                )
+                submit = st.button(
+                    "立即应对",
+                    type="primary",
+                    key=f"boss_skill_submit_{bs.quiz_asked}_{cs.turns}",
+                    use_container_width=True,
+                )
 
-    choice = st.radio(
-        "应对选项",
-        options,
-        key=f"boss_skill_choice_{bs.quiz_asked}_{cs.turns}",
-        label_visibility="collapsed",
-    )
-    if st.button(
-        "立即应对",
-        type="primary",
-        key=f"boss_skill_submit_{bs.quiz_asked}_{cs.turns}",
-        use_container_width=True,
-    ):
+    if submit:
         player = st.session_state.player
         correct = choice == quiz.get("answer")
-        if quiz_type == "vocab":
-            if correct:
-                damage = int(quiz.get("damage_to_boss", 20))
-                cs.enemy.take_damage(damage)
-                st.success(f"命中首领弱点，造成 {damage} 伤害")
-            else:
-                st.warning("未能命中首领弱点")
+        if correct:
+            damage = 20
+            cs.enemy.take_damage(damage)
+            st.success(f"首领反噬受到 {damage} 伤害")
         else:
-            if correct:
-                st.success("成功识破首领终极技")
-            else:
-                damage = int(quiz.get("damage_to_player", 10))
-                player.change_hp(-damage)
-                st.error(f"终极技命中你，受到 {damage} 伤害")
-                if check_death_callback():
-                    return True
+            damage = 15
+            player.change_hp(-damage)
+            st.error(f"应对失败，你受到 {damage} 伤害")
+            if check_death_callback():
+                return True
 
         bs.quiz_asked += 1
         bs.active_quiz = None
@@ -1124,9 +1190,20 @@ def render_boss(resolve_node_callback: Callable, check_death_callback: Callable)
 
         st.markdown("## 👹 语法巨像")
         st.progress(max(0, bs.boss_hp / bs.boss_max_hp), f"生命: {bs.boss_hp}/{bs.boss_max_hp}")
+        if cs.enemy.current_timer == 1:
+            intent_text = f"攻击意图：即将攻击（{cs.enemy.attack} 伤害）"
+        elif cs.enemy.current_timer == 2:
+            intent_text = f"攻击意图：蓄力中...（{cs.enemy.current_timer} 回合后攻击）"
+        else:
+            intent_text = f"攻击意图：准备中...（{cs.enemy.current_timer} 回合后攻击）"
+        st.caption(intent_text)
         st.caption(
             f"题目进度 {bs.quiz_asked}/{bs.death_lock_until_quiz_count} | 普攻间隔 {bs.boss_attack_interval} 回合"
         )
+        turn_note = f"回合: {cs.turns}"
+        if cs.next_card_multiplier and cs.next_card_multiplier > 1:
+            turn_note += f" | 下一张数值 x{cs.next_card_multiplier}"
+        st.caption(turn_note)
         if bs.frenzy_active:
             st.warning("狂暴阶段：攻击频率提升")
 
@@ -1167,19 +1244,12 @@ def render_boss(resolve_node_callback: Callable, check_death_callback: Callable)
                 return
             return
 
-        col_left, col_right = st.columns([1, 2])
-        with col_left:
-            render_enemy(cs.enemy)
-            st.markdown(f"**回合:** {cs.turns}")
-            if cs.next_card_multiplier and cs.next_card_multiplier > 1:
-                st.success(f"下一张数值 x{cs.next_card_multiplier}")
-        with col_right:
-            if cs.current_card:
-                if _render_boss_card_test(cs, bs, check_death_callback):
-                    return
-            else:
-                st.markdown("### 选择出牌")
-                st.info("正常出牌。每 2 回合会触发一次首领技能问答。")
+        if cs.current_card:
+            if _render_boss_card_test(cs, bs, check_death_callback):
+                return
+        else:
+            st.markdown("### 选择出牌")
+            st.info("正常出牌。每 2 回合会触发一次首领技能问答。")
 
         st.divider()
         if not cs.current_card:

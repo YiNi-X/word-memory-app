@@ -570,7 +570,7 @@ class BossState:
     quiz_asked: int = 0
     next_quiz_turn: int = 2
     quiz_interval_turns: int = 2
-    death_lock_until_quiz_count: int = 5
+    death_lock_until_quiz_count: int = 8
     death_lock_active: bool = False
     frenzy_active: bool = False
     boss_attack_interval: int = 3

@@ -599,22 +599,21 @@ st.markdown("""
         animation: bossAlertSweep 1.8s linear infinite;
     }
     .boss-interrupt-meta {
-        margin-top: 8px;
+        margin-top: 2px;
         font-size: 13px;
-        opacity: 0.92;
+        opacity: 0.86;
     }
     .boss-interrupt-question {
         margin-top: 10px;
-        max-height: 180px;
-        overflow: auto;
-        line-height: 1.5;
-        font-size: 17px;
+        line-height: 1.55;
+        font-size: 18px;
         font-weight: 700;
+        color: #f6f7fb;
     }
     .boss-interrupt-tip {
         margin-top: 8px;
         font-size: 12px;
-        opacity: 0.84;
+        opacity: 0.82;
     }
     .boss-skill-vocab .boss-interrupt-card {
         border-color: rgba(255, 120, 88, 0.62);
@@ -629,6 +628,16 @@ st.markdown("""
     }
     .boss-skill-reading .boss-interrupt-alert {
         color: #e4f2ff;
+    }
+    .boss-interrupt-panel {
+        display: grid;
+        gap: 8px;
+    }
+    .boss-interrupt-title {
+        font-size: 18px;
+        font-weight: 800;
+        letter-spacing: 0.4px;
+        color: #ffe4de;
     }
     @media (max-width: 768px) {
         .boss-interrupt-shell {

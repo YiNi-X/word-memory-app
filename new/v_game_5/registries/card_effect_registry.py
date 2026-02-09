@@ -133,11 +133,34 @@ def _gold_random_effect(ctx: EffectContext):
     if has_hat:
         ctx.cs.extra_actions += 1
 
-    effect = random.choice(["mult", "draw", "damage"])
+    weights = {"mult": 1, "draw": 1, "damage": 1}
+    hand_before = len(getattr(ctx.cs, "hand", [])) + 1
+    if hand_before <= 3:
+        weights["draw"] += 2
+    red_in_hand = sum(1 for c in getattr(ctx.cs, "hand", []) if c.card_type == CardType.RED_BERSERK)
+    if red_in_hand >= 2:
+        weights["mult"] += 2
+    if getattr(ctx.enemy, "is_boss", False):
+        max_hp = max(1, getattr(ctx.enemy, "max_hp", 1))
+        if (ctx.enemy.hp / max_hp) > 0.5:
+            weights["damage"] += 2
+
+    effect = random.choices(
+        ["mult", "draw", "damage"],
+        weights=[weights["mult"], weights["draw"], weights["damage"]],
+        k=1,
+    )[0]
+
     if effect == "mult":
-        ctx.cs.next_card_multiplier = multiplier
-        _emit(ctx, "toast", f"金卡效果：下张数值 x{multiplier}")
-    elif effect == "draw":
+        ctx.cs.next_card_multiplier = max(1, ctx.cs.next_card_multiplier) * multiplier
+        _emit(ctx, "toast", f"金卡效果：下张数值 x{ctx.cs.next_card_multiplier}")
+        return
+
+    active_multiplier = max(1, ctx.cs.next_card_multiplier)
+    if effect == "draw":
+        if active_multiplier > 1:
+            draw_count *= active_multiplier
+            ctx.cs.next_card_multiplier = 1
         drawn_count = 0
         for _ in range(draw_count):
             if ctx.cs.draw_card():
@@ -146,9 +169,13 @@ def _gold_random_effect(ctx: EffectContext):
             _emit(ctx, "toast", f"金卡效果：抽 {drawn_count} 张牌")
         else:
             _emit(ctx, "toast", "金卡效果：没有可抽的牌")
-    else:
-        ctx.enemy.take_damage(direct_damage)
-        _emit(ctx, "toast", f"金卡效果：直接造成 {direct_damage} 伤害")
+        return
+
+    if active_multiplier > 1:
+        direct_damage *= active_multiplier
+        ctx.cs.next_card_multiplier = 1
+    ctx.enemy.take_damage(direct_damage)
+    _emit(ctx, "toast", f"金卡效果：直接造成 {direct_damage} 伤害")
 
 
 def _gold_no_penalty(ctx: EffectContext):
@@ -216,12 +243,20 @@ class CardEffectRegistry:
     def apply_effect(cls, card_type_name: str, ctx: EffectContext, correct: bool):
         if ctx.enemy.is_boss:
             if correct:
-                dmg = 10
-                if ctx.cs.next_card_multiplier > 1:
-                    dmg *= ctx.cs.next_card_multiplier
-                    ctx.cs.next_card_multiplier = 1
-                ctx.enemy.take_damage(dmg)
-                _emit(ctx, "toast", f"首领受到 {dmg} 伤害")
+                if card_type_name == "GOLD_SUPPORT":
+                    dmg = 10
+                    if ctx.cs.next_card_multiplier > 1:
+                        dmg *= ctx.cs.next_card_multiplier
+                    ctx.enemy.take_damage(dmg)
+                    _emit(ctx, "toast", f"首领受到 {dmg} 伤害")
+                    _gold_random_effect(ctx)
+                else:
+                    dmg = 10
+                    if ctx.cs.next_card_multiplier > 1:
+                        dmg *= ctx.cs.next_card_multiplier
+                        ctx.cs.next_card_multiplier = 1
+                    ctx.enemy.take_damage(dmg)
+                    _emit(ctx, "toast", f"首领受到 {dmg} 伤害")
             else:
                 penalty = 25
                 ctx.player.change_hp(-penalty, notify=ctx.notify)

@@ -237,13 +237,13 @@ Strictly return a valid JSON object:
 **Task**: Generate 2 types of battle questions (Quizzes).
 
 **Type 1: Weak Point Attack (Vocabulary Cloze)**
-* Select 3 distinct sentences from the article that contain one of the **Target Words**.
+* Select 5 distinct sentences from the article that contain one of the **Target Words**.
 * Replace the target word with "______".
 * Goal: Test if the player recognizes the word's usage context.
 * These are used for the player to deal damage.
 
 **Type 2: Boss Ultimate Move (Reading Comprehension)**
-* Create 2 difficult questions based on the *inference* or *main idea* of the article.
+* Create 3 difficult questions based on the *inference* or *main idea* of the article.
 * These answers should NOT be explicitly found in the text but require understanding.
 * These are "Boss Ultimate Attacks" that hurt the player if answered wrong.
 
@@ -333,7 +333,8 @@ class MockGenerator:
             word_list = ["vocabulary", "context", "inference"]
 
         vocab_attacks = []
-        for token in word_list[:3]:
+        for i in range(5):
+            token = word_list[i % len(word_list)]
             options = [token, "horizon", "archive", "entropy"]
             random.shuffle(options)
             vocab_attacks.append(
@@ -369,6 +370,18 @@ class MockGenerator:
                     "To map a river route",
                 ],
                 "answer": "To unlock the final command",
+                "damage_to_player": 40,
+            },
+            {
+                "type": "reading",
+                "question": "What does the story emphasize about the tower?",
+                "options": [
+                    "It is bound to language and memory",
+                    "It is a simple training hall",
+                    "It is a safe refuge without conflict",
+                    "It is unrelated to the crew",
+                ],
+                "answer": "It is bound to language and memory",
                 "damage_to_player": 40,
             },
         ]
